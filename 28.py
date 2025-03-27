@@ -203,8 +203,8 @@ TRAILING_SL_PERCENTAGES = [0.6, 0.5, 0.4, 0.3]  # SL percentages for each thresh
 # Enhanced Target Settings
 DYNAMIC_TARGET_ADJUSTMENT = True  # Enable dynamic target adjustment
 MIN_TARGET_ADJUSTMENT = 0.2  # Minimum target adjustment percentage
-MAX_TARGET_ADJUSTMENT = 2.0  # Maximum target adjustment percentage
-TARGET_MOMENTUM_FACTOR = 0.3  # Factor for momentum-based target adjustment
+MAX_TARGET_ADJUSTMENT = 2.5  # Increased maximum target adjustment percentage for higher profits
+TARGET_MOMENTUM_FACTOR = 0.4  # Increased factor for momentum-based target adjustment
 
 # Position Management
 MAX_POSITION_HOLDING_TIME_SCALP = 10  # Maximum scalping trade holding time in minutes
@@ -277,11 +277,11 @@ MAX_PRICE_HISTORY_POINTS = 1000  # Maximum number of price history points to sto
 NUM_STRIKES_TO_FETCH = 5  # Number of strikes above and below current price to fetch
 OPTION_AUTO_SELECT_INTERVAL = 600  # Automatically update option selection every 10 minutes (increased from 5)
 
-# News Monitoring Parameters
-NEWS_CHECK_INTERVAL = 60  # Check for news every 60 seconds
-NEWS_SENTIMENT_THRESHOLD = 0.3  # Threshold for considering news as positive/negative
-NEWS_CONFIDENCE_THRESHOLD = 0.7  # Minimum confidence to trade on news
-NEWS_MAX_AGE = 3600  # Max age of news in seconds (1 hour) to consider for trading
+# News Monitoring Parameters - IMPROVED: Reduced interval and increased confidence
+NEWS_CHECK_INTERVAL = 30  # Check for news every 30 seconds (reduced from 60)
+NEWS_SENTIMENT_THRESHOLD = 0.25  # Threshold for considering news as positive/negative (reduced from 0.3)
+NEWS_CONFIDENCE_THRESHOLD = 0.65  # Minimum confidence to trade on news (reduced from 0.7)
+NEWS_MAX_AGE = 1800  # Max age of news in seconds (30 minutes) to consider for trading (reduced from 1 hour)
 
 # Historical Data Paths
 NIFTY_HISTORY_PATH = r"C:\Users\madhu\Pictures\ubuntu\NIFTY.csv"
@@ -359,6 +359,69 @@ ui_data_store = {
     'predicted_strategies': {},  # Added for strategy predictions
     'news': {}  # Added for news data
 }
+# ============ Trading State Class ============
+class TradingState:
+    def __init__(self):
+        self.active_trades = {}
+        self.entry_price = {}
+        self.entry_time = {}
+        self.stop_loss = {}
+        self.initial_stop_loss = {}
+        self.target = {}
+        self.trailing_sl_activated = {}
+        self.pnl = {}
+        self.strategy_type = {}
+        self.trade_source = {}  # Added to track source of trade (e.g., "NEWS", "TECHNICAL")
+        self.total_pnl = 0
+        self.daily_pnl = 0
+        self.trades_history = []
+        self.trades_today = 0
+        self.trading_day = datetime.now().date()
+        self.stock_entry_price = {}
+        self.quantity = {}
+        self.capital = 100000  # Initial capital
+        self.wins = 0
+        self.losses = 0
+        
+    def add_option(self, option_key):
+        """Initialize tracking for a new option"""
+        if option_key not in self.active_trades:
+            self.active_trades[option_key] = False
+            self.entry_price[option_key] = None
+            self.entry_time[option_key] = None
+            self.stop_loss[option_key] = None
+            self.initial_stop_loss[option_key] = None
+            self.target[option_key] = None
+            self.trailing_sl_activated[option_key] = False
+            self.pnl[option_key] = 0
+            self.strategy_type[option_key] = None
+            self.trade_source[option_key] = None
+            self.stock_entry_price[option_key] = None
+            self.quantity[option_key] = 0
+            return True
+        return False
+
+    def remove_option(self, option_key):
+        """Remove an option from trading state tracking"""
+        if option_key in self.active_trades and not self.active_trades[option_key]:
+            del self.active_trades[option_key]
+            del self.entry_price[option_key]
+            del self.entry_time[option_key]
+            del self.stop_loss[option_key]
+            del self.initial_stop_loss[option_key]
+            del self.target[option_key]
+            del self.trailing_sl_activated[option_key]
+            del self.pnl[option_key]
+            del self.strategy_type[option_key]
+            del self.trade_source[option_key]
+            if option_key in self.stock_entry_price:
+                del self.stock_entry_price[option_key]
+            if option_key in self.quantity:
+                del self.quantity[option_key]
+            return True
+        return False
+
+trading_state = TradingState()
 
 # ============ Trading State Class ============
 class TradingState:
@@ -437,7 +500,7 @@ def fetch_news_from_sources():
         if 'feedparser' in sys.modules:
             # Fetch from Yahoo Finance RSS
             yahoo_feed = feedparser.parse('https://finance.yahoo.com/news/rssindex')
-            for entry in yahoo_feed.entries[:10]:  # Get top 10 news
+            for entry in yahoo_feed.entries[:15]:  # Get top 15 news (increased from 10)
                 news_items.append({
                     'title': entry.title,
                     'description': entry.get('description', ''),
@@ -449,7 +512,7 @@ def fetch_news_from_sources():
             # Add Moneycontrol news (India specific)
             try:
                 mc_feed = feedparser.parse('https://www.moneycontrol.com/rss/latestnews.xml')
-                for entry in mc_feed.entries[:10]:
+                for entry in mc_feed.entries[:15]:  # Get top 15 news (increased from 10)
                     news_items.append({
                         'title': entry.title,
                         'description': entry.get('description', ''),
@@ -459,6 +522,20 @@ def fetch_news_from_sources():
                     })
             except Exception as e:
                 logger.warning(f"Error fetching Moneycontrol news: {e}")
+                
+            # Add Economic Times news (India specific)
+            try:
+                et_feed = feedparser.parse('https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms')
+                for entry in et_feed.entries[:15]:  # Get top 15 news
+                    news_items.append({
+                        'title': entry.title,
+                        'description': entry.get('description', ''),
+                        'source': 'Economic Times',
+                        'timestamp': datetime.now(),
+                        'url': entry.link
+                    })
+            except Exception as e:
+                logger.warning(f"Error fetching Economic Times news: {e}")
         
         else:
             # Fallback to a simplified approach if feedparser is not available
@@ -500,27 +577,88 @@ def analyze_news_for_stocks(news_items, stock_universe):
             description = item.get('description', '')
             full_text = f"{title} {description}"
             
-            # Basic sentiment analysis
-            positive_words = ['surge', 'jump', 'rise', 'gain', 'profit', 'up', 'higher', 'bull', 'positive', 
-                             'outperform', 'rally', 'strong', 'beat', 'exceed', 'growth']
-            negative_words = ['fall', 'drop', 'decline', 'loss', 'down', 'lower', 'bear', 'negative',
-                             'underperform', 'weak', 'miss', 'disappointing', 'sell-off', 'crash']
+            # Enhanced sentiment analysis with more keywords and weightings
+            positive_words = {
+                'surge': 1.5, 'jump': 1.5, 'rise': 1.0, 'gain': 1.0, 'profit': 1.2, 
+                'up': 0.8, 'higher': 1.0, 'bull': 1.3, 'positive': 1.0, 
+                'outperform': 1.4, 'rally': 1.5, 'strong': 1.2, 'beat': 1.3, 
+                'exceed': 1.4, 'growth': 1.2, 'soar': 1.7, 'boost': 1.2, 
+                'upgrade': 1.5, 'breakthrough': 1.6, 'opportunity': 1.1,
+                'record high': 1.8, 'buy': 1.3, 'accumulate': 1.2
+            }
             
-            # Count occurrences of positive and negative words
-            pos_count = sum(1 for word in positive_words if word.lower() in full_text.lower())
-            neg_count = sum(1 for word in negative_words if word.lower() in full_text.lower())
+            negative_words = {
+                'fall': 1.5, 'drop': 1.5, 'decline': 1.0, 'loss': 1.2, 'down': 0.8, 
+                'lower': 1.0, 'bear': 1.3, 'negative': 1.0, 'underperform': 1.4, 
+                'weak': 1.2, 'miss': 1.3, 'disappointing': 1.4, 'sell-off': 1.6, 
+                'crash': 1.8, 'downgrade': 1.5, 'warning': 1.3, 'risk': 1.0,
+                'trouble': 1.4, 'concern': 1.1, 'caution': 0.9, 'burden': 1.2,
+                'record low': 1.8, 'sell': 1.3, 'reduce': 1.2
+            }
+            
+            # Calculate weighted sentiment score
+            pos_score = 0
+            neg_score = 0
+            
+            # Check for positive words with proximity bonus
+            for word, weight in positive_words.items():
+                if word.lower() in full_text.lower():
+                    # Count occurrences
+                    count = full_text.lower().count(word.lower())
+                    # Add to score with weight
+                    pos_score += count * weight
+                    
+                    # Title bonus - words in title have more impact
+                    if word.lower() in title.lower():
+                        pos_score += 0.5 * weight
+            
+            # Check for negative words with proximity bonus
+            for word, weight in negative_words.items():
+                if word.lower() in full_text.lower():
+                    # Count occurrences
+                    count = full_text.lower().count(word.lower())
+                    # Add to score with weight
+                    neg_score += count * weight
+                    
+                    # Title bonus - words in title have more impact
+                    if word.lower() in title.lower():
+                        neg_score += 0.5 * weight
             
             # Calculate sentiment score (-1 to 1)
-            if pos_count + neg_count > 0:
-                sentiment = (pos_count - neg_count) / (pos_count + neg_count)
+            if pos_score + neg_score > 0:
+                sentiment = (pos_score - neg_score) / (pos_score + neg_score)
             else:
                 sentiment = 0  # Neutral if no sentiment words found
             
-            # Look for stock mentions
+            # Improved stock mention detection
             for stock in stock_universe:
                 # Look for exact stock symbol with word boundaries
                 pattern = r'\b' + re.escape(stock) + r'\b'
-                if re.search(pattern, full_text, re.IGNORECASE):
+                
+                # Also check for common variations of the stock name
+                stock_variations = [stock]
+                
+                # Add variations for common Indian stocks
+                if stock == "RELIANCE":
+                    stock_variations.extend(["Reliance Industries", "RIL"])
+                elif stock == "INFY":
+                    stock_variations.extend(["Infosys", "Infosys Technologies"])
+                elif stock == "TCS":
+                    stock_variations.extend(["Tata Consultancy", "Tata Consultancy Services"])
+                elif stock == "HDFCBANK":
+                    stock_variations.extend(["HDFC Bank", "Housing Development Finance Corporation"])
+                elif stock == "SBIN":
+                    stock_variations.extend(["State Bank of India", "SBI"])
+                
+                # Check for any variation
+                found = False
+                for variation in stock_variations:
+                    var_pattern = r'\b' + re.escape(variation) + r'\b'
+                    if re.search(var_pattern, full_text, re.IGNORECASE):
+                        found = True
+                        break
+                
+                if found:
                     if stock not in stock_mentions:
                         stock_mentions[stock] = []
                     
@@ -558,10 +696,16 @@ def generate_news_trading_signals(stock_mentions):
         # Calculate average sentiment
         avg_sentiment = sum(mention['sentiment'] for mention in mentions) / len(mentions)
         
+        # Determine confidence based on number of mentions and sentiment strength
+        mentions_factor = min(len(mentions) / 3, 1.0)  # Scale up to 3 mentions
+        sentiment_factor = min(abs(avg_sentiment) * 1.5, 1.0)  # Scale sentiment impact
+        
+        # Combined confidence score
+        confidence = (mentions_factor * 0.6) + (sentiment_factor * 0.4)  # 60% mentions, 40% sentiment strength
+        
         # Determine trading action based on sentiment
         if avg_sentiment > NEWS_SENTIMENT_THRESHOLD:  # Strong positive sentiment
             action = 'BUY_CE'  # Buy Call option
-            confidence = min(abs(avg_sentiment) * 2, 1.0)  # Scale to 0-1
             
             trading_signals.append({
                 'stock': stock,
@@ -577,7 +721,6 @@ def generate_news_trading_signals(stock_mentions):
             
         elif avg_sentiment < -NEWS_SENTIMENT_THRESHOLD:  # Strong negative sentiment
             action = 'BUY_PE'  # Buy Put option
-            confidence = min(abs(avg_sentiment) * 2, 1.0)  # Scale to 0-1
             
             trading_signals.append({
                 'stock': stock,
@@ -591,7 +734,37 @@ def generate_news_trading_signals(stock_mentions):
             })
             logger.info(f"Generated BUY_PE signal for {stock} with confidence {confidence:.2f}")
     
+    # Sort signals by confidence (highest first)
+    trading_signals.sort(key=lambda x: x['confidence'], reverse=True)
+    
     return trading_signals
+
+def add_news_mentioned_stocks():
+    """Add stocks that are mentioned in news but not currently tracked"""
+    if not news_data.get("mentions"):
+        return
+    
+    # Get all mentioned stocks
+    mentioned_stocks = set(news_data["mentions"].keys())
+    
+    # Get currently tracked stocks
+    tracked_stocks = set(stocks_data.keys())
+    
+    # Find stocks to add (mentioned but not tracked)
+    stocks_to_add = mentioned_stocks - tracked_stocks
+    
+    # Add each stock
+    for stock in stocks_to_add:
+        # Skip if it doesn't look like a valid stock symbol
+        if not stock.isalpha() or len(stock) < 2:
+            continue
+            
+        logger.info(f"Adding stock {stock} based on news mentions")
+        add_stock(stock, None, "NSE", "STOCK")
+        
+        # Try to fetch data immediately
+        if broker_connected:
+            fetch_stock_data(stock)
 
 def execute_news_based_trades():
     """Execute trades based on news analysis"""
@@ -613,7 +786,10 @@ def execute_news_based_trades():
         logger.info("Maximum daily loss reached, skipping news-based trades")
         return
     
-    for signal in news_data["trading_signals"]:
+    # Limit to top 3 highest confidence signals
+    top_signals = sorted(news_data["trading_signals"], key=lambda x: x['confidence'], reverse=True)[:3]
+    
+    for signal in top_signals:
         stock = signal['stock']
         action = signal['action']
         confidence = signal['confidence']
@@ -665,12 +841,9 @@ def execute_news_based_trades():
         
         # Execute the trade
         strategy_type = "NEWS"  # Special strategy type for news-based trades
-        success = enter_trade(option_key, strategy_type)
+        success = enter_trade(option_key, strategy_type, "NEWS")
         
         if success:
-            # Mark this trade as news-based
-            trading_state.trade_source[option_key] = "NEWS"
-            
             logger.info(f"Executed news-based trade for {stock} {option_type} based on: {news_title}")
             
             # Update news signal to avoid duplicate trades
@@ -678,7 +851,7 @@ def execute_news_based_trades():
             signal['execution_time'] = datetime.now()
             signal['option_key'] = option_key
             
-            # We only take one news-based trade at a time
+            # We only take a few news-based trades at a time
             break
 
 def update_news_data():
@@ -693,7 +866,12 @@ def update_news_data():
     stock_universe = list(stocks_data.keys())
     
     # Add a list of common Indian stocks/indices
-    common_stocks = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "WIPRO", "SBIN", "TATAMOTORS", "BAJFINANCE"]
+    common_stocks = [
+        "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "WIPRO", "SBIN", 
+        "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ADANIPORTS", "HINDUNILVR",
+        "AXISBANK", "SUNPHARMA", "KOTAKBANK", "ONGC", "MARUTI", "BHARTIARTL"
+    ]
+    
     for stock in common_stocks:
         if stock not in stock_universe:
             stock_universe.append(stock)
@@ -729,12 +907,15 @@ def update_news_data():
             'last_updated': current_time.strftime('%H:%M:%S')
         }
         
+        # Add stocks mentioned in news
+        add_news_mentioned_stocks()
+        
         # Try to execute trades if any signals were generated
         if trading_signals and broker_connected:
             execute_news_based_trades()
     
     last_news_update = current_time
-
+# ============ Stock Management Functions ============
 # ============ Stock Management Functions ============
 def fetch_stock_data(symbol):
     """
@@ -995,6 +1176,9 @@ def load_historical_data(symbol, period="3mo", force_refresh=False):
         # Force recalculation of support/resistance
         calculate_support_resistance(symbol)
         stocks_data[symbol]["last_sr_update"] = datetime.now()
+        
+        # Also recalculate strategy prediction with new historical data
+        predict_strategy_for_stock(symbol)
         
         logger.info(f"Successfully loaded historical data for {symbol}: {len(history_df)} points")
         return True
@@ -1280,6 +1464,61 @@ def fetch_pcr_data():
             logger.info(f"Added default PCR for {idx}: {val:.2f}")
     
     return pcr_dict
+
+def remove_stock(symbol):
+    """Remove a stock and its options from tracking"""
+    global stocks_data, options_data, volatility_data, market_sentiment, pcr_data
+    
+    # Standardize symbol name to uppercase
+    symbol = symbol.upper()
+    
+    if symbol not in stocks_data:
+        return False
+    
+    # First remove all associated options
+    if "options" in stocks_data[symbol]:
+        for option_type in ["CE", "PE"]:
+            for option_key in stocks_data[symbol]["options"].get(option_type, []):
+                if option_key in options_data:
+                    # Exit any active trade on this option
+                    if trading_state.active_trades.get(option_key, False):
+                        exit_trade(option_key, reason="Stock removed")
+                    
+                    # Remove option data
+                    del options_data[option_key]
+                    
+                    # Clean up trading state
+                    trading_state.remove_option(option_key)
+    
+    # Clean up other data structures
+    if symbol in volatility_data:
+        del volatility_data[symbol]
+    
+    if symbol in market_sentiment:
+        del market_sentiment[symbol]
+    
+    if symbol in pcr_data:
+        del pcr_data[symbol]
+    
+    if symbol in last_data_update["stocks"]:
+        del last_data_update["stocks"][symbol]
+    
+    # Remove from UI data stores
+    if symbol in ui_data_store['stocks']:
+        del ui_data_store['stocks'][symbol]
+    
+    if symbol in ui_data_store['options']:
+        del ui_data_store['options'][symbol]
+    
+    if symbol in ui_data_store['predicted_strategies']:
+        del ui_data_store['predicted_strategies'][symbol]
+    
+    # Finally, remove the stock itself
+    del stocks_data[symbol]
+    
+    logger.info(f"Removed stock: {symbol}")
+    return True
+
 
 def update_pcr_data(symbol):
     """Update PCR data for a symbol using real data when possible, falling back to simulation."""
@@ -1771,59 +2010,6 @@ def update_all_options():
     # Log overall update status
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
 
-def remove_stock(symbol):
-    """Remove a stock and its options from tracking"""
-    global stocks_data, options_data, volatility_data, market_sentiment, pcr_data
-    
-    # Standardize symbol name to uppercase
-    symbol = symbol.upper()
-    
-    if symbol not in stocks_data:
-        return False
-    
-    # First remove all associated options
-    if "options" in stocks_data[symbol]:
-        for option_type in ["CE", "PE"]:
-            for option_key in stocks_data[symbol]["options"].get(option_type, []):
-                if option_key in options_data:
-                    # Exit any active trade on this option
-                    if trading_state.active_trades.get(option_key, False):
-                        exit_trade(option_key, reason="Stock removed")
-                    
-                    # Remove option data
-                    del options_data[option_key]
-                    
-                    # Clean up trading state
-                    trading_state.remove_option(option_key)
-    
-    # Clean up other data structures
-    if symbol in volatility_data:
-        del volatility_data[symbol]
-    
-    if symbol in market_sentiment:
-        del market_sentiment[symbol]
-    
-    if symbol in pcr_data:
-        del pcr_data[symbol]
-    
-    if symbol in last_data_update["stocks"]:
-        del last_data_update["stocks"][symbol]
-    
-    # Remove from UI data stores
-    if symbol in ui_data_store['stocks']:
-        del ui_data_store['stocks'][symbol]
-    
-    if symbol in ui_data_store['options']:
-        del ui_data_store['options'][symbol]
-    
-    if symbol in ui_data_store['predicted_strategies']:
-        del ui_data_store['predicted_strategies'][symbol]
-    
-    # Finally, remove the stock itself
-    del stocks_data[symbol]
-    
-    logger.info(f"Removed stock: {symbol}")
-    return True
 
 # Global variables for script master data
 SCRIPT_MASTER_PATH = r"C:\Users\madhu\Pictures\ubuntu\OpenAPIScripMaster.json"
@@ -1868,6 +2054,16 @@ def load_script_master():
         script_master_data = {}
         return False
 
+# Script master index for faster lookups
+script_master_index = {
+    'by_symbol': {},
+    'by_token': {}
+}
+# Script master index for faster lookups
+script_master_index = {
+    'by_symbol': {},
+    'by_token': {}
+}
 # Script master index for faster lookups
 script_master_index = {
     'by_symbol': {},
@@ -3029,6 +3225,8 @@ def schedule_option_token_refresh():
     logger.info(f"Option token refresh completed. Cache size: {len(option_token_cache)}")
 
 # ============ Technical Indicators ============
+
+# ============ Technical Indicators ============
 def calculate_rsi(data, period=RSI_PERIOD):
     """Calculate RSI technical indicator with improved error handling."""
     try:
@@ -3522,100 +3720,6 @@ def generate_option_signals(option_key):
         option_info["trend"] = "NEUTRAL"
 
 # ============ PCR Analysis ============
-@rate_limited
-def fetch_option_chain(symbol):
-    """Generate simulated option chain for PCR calculation with realistic characteristics"""
-    try:
-        # Get current price for the symbol
-        current_price = None
-        if symbol in stocks_data:
-            current_price = stocks_data[symbol].get("ltp")
-        
-        if current_price is None:
-            current_price = 100  # Default value
-        
-        # Generate strikes around current price with proper intervals
-        if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
-            # For indices, use 50-point interval
-            base_strike = round(current_price / 50) * 50
-            strike_interval = 50
-            num_strikes = 10  # 5 strikes below, 5 above
-        elif current_price > 1000:
-            # For high-priced stocks
-            base_strike = round(current_price / 20) * 20
-            strike_interval = 20
-            num_strikes = 10
-        else:
-            # For regular stocks
-            base_strike = round(current_price / 10) * 10
-            strike_interval = 10
-            num_strikes = 10
-        
-        strikes = [base_strike + (i - num_strikes//2) * strike_interval for i in range(num_strikes)]
-        
-        # Generate option chain
-        option_chain = []
-        total_ce_oi = 0
-        total_pe_oi = 0
-        
-        for strike in strikes:
-            # Calculate distance from ATM
-            distance_factor = abs(strike - current_price) / current_price
-            
-            # For realistic OI distribution - higher near ATM
-            atm_factor = max(0.5, 1 - distance_factor * 3)
-            
-            # Slight bias based on whether strike is above or below current price
-            if strike > current_price:
-                ce_bias = 0.9  # Less CE OI above current price
-                pe_bias = 1.1  # More PE OI above current price
-            else:
-                ce_bias = 1.1  # More CE OI below current price
-                pe_bias = 0.9  # Less PE OI below current price
-            
-            # Generate OI data with randomness
-            ce_oi = int(random.random() * 10000 * atm_factor * ce_bias)
-            pe_oi = int(random.random() * 10000 * atm_factor * pe_bias)
-            
-            total_ce_oi += ce_oi
-            total_pe_oi += pe_oi
-            
-            # Calculate option prices with realistic characteristics
-            if strike > current_price:
-                # Out of the money CE, in the money PE
-                ce_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
-                pe_price = max(0.1, strike - current_price + (current_price * 0.02))
-            else:
-                # In the money CE, out of the money PE
-                ce_price = max(0.1, current_price - strike + (current_price * 0.02))
-                pe_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
-            
-            # CE option
-            ce_option = {
-                "optionType": "CE",
-                "strikePrice": strike,
-                "openInterest": ce_oi,
-                "lastPrice": ce_price
-            }
-            option_chain.append(ce_option)
-            
-            # PE option
-            pe_option = {
-                "optionType": "PE",
-                "strikePrice": strike,
-                "openInterest": pe_oi,
-                "lastPrice": pe_price
-            }
-            option_chain.append(pe_option)
-        
-        # Add total OI to the option chain data for easier PCR calculation
-        option_chain.append({"totalCEOI": total_ce_oi, "totalPEOI": total_pe_oi})
-        
-        return option_chain
-    except Exception as e:
-        logger.error(f"Error generating simulated option chain for {symbol}: {e}")
-        return None
-
 def determine_pcr_trend(symbol):
     """Determine the trend of PCR based on recent history."""
     if symbol not in pcr_data:
@@ -3671,21 +3775,6 @@ def update_all_pcr_data():
     update_market_sentiment()
     
     last_pcr_update = current_time
-
-def get_pcr_signal(symbol):
-    """Generate trading signal based on PCR value and trend."""
-    if symbol not in pcr_data:
-        return "NEUTRAL", "badge bg-secondary"
-    
-    pcr_value = pcr_data[symbol]["current"]
-    trend = pcr_data[symbol]["trend"]
-    
-    if pcr_value > PCR_BEARISH_THRESHOLD and trend == "RISING":
-        return "BEARISH", "badge bg-danger"
-    elif pcr_value < PCR_BULLISH_THRESHOLD and trend == "FALLING":
-        return "BULLISH", "badge bg-success"
-    else:
-        return "NEUTRAL", "badge bg-secondary"
 
 def update_market_sentiment():
     """Update market sentiment based on technical indicators and PCR with improved algorithms."""
@@ -3833,7 +3922,119 @@ def update_market_sentiment():
         
     logger.info(f"Updated market sentiment. Overall: {market_sentiment['overall']}")
 
+# ============ PCR Analysis ============
+@rate_limited
+def fetch_option_chain(symbol):
+    """Generate simulated option chain for PCR calculation with realistic characteristics"""
+    try:
+        # Get current price for the symbol
+        current_price = None
+        if symbol in stocks_data:
+            current_price = stocks_data[symbol].get("ltp")
+        
+        if current_price is None:
+            current_price = 100  # Default value
+        
+        # Generate strikes around current price with proper intervals
+        if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+            # For indices, use 50-point interval
+            base_strike = round(current_price / 50) * 50
+            strike_interval = 50
+            num_strikes = 10  # 5 strikes below, 5 above
+        elif current_price > 1000:
+            # For high-priced stocks
+            base_strike = round(current_price / 20) * 20
+            strike_interval = 20
+            num_strikes = 10
+        else:
+            # For regular stocks
+            base_strike = round(current_price / 10) * 10
+            strike_interval = 10
+            num_strikes = 10
+        
+        strikes = [base_strike + (i - num_strikes//2) * strike_interval for i in range(num_strikes)]
+        
+        # Generate option chain
+        option_chain = []
+        total_ce_oi = 0
+        total_pe_oi = 0
+        
+        for strike in strikes:
+            # Calculate distance from ATM
+            distance_factor = abs(strike - current_price) / current_price
+            
+            # For realistic OI distribution - higher near ATM
+            atm_factor = max(0.5, 1 - distance_factor * 3)
+            
+            # Slight bias based on whether strike is above or below current price
+            if strike > current_price:
+                ce_bias = 0.9  # Less CE OI above current price
+                pe_bias = 1.1  # More PE OI above current price
+            else:
+                ce_bias = 1.1  # More CE OI below current price
+                pe_bias = 0.9  # Less PE OI below current price
+            
+            # Generate OI data with randomness
+            ce_oi = int(random.random() * 10000 * atm_factor * ce_bias)
+            pe_oi = int(random.random() * 10000 * atm_factor * pe_bias)
+            
+            total_ce_oi += ce_oi
+            total_pe_oi += pe_oi
+            
+            # Calculate option prices with realistic characteristics
+            if strike > current_price:
+                # Out of the money CE, in the money PE
+                ce_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
+                pe_price = max(0.1, strike - current_price + (current_price * 0.02))
+            else:
+                # In the money CE, out of the money PE
+                ce_price = max(0.1, current_price - strike + (current_price * 0.02))
+                pe_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
+            
+            # CE option
+            ce_option = {
+                "optionType": "CE",
+                "strikePrice": strike,
+                "openInterest": ce_oi,
+                "lastPrice": ce_price
+            }
+            option_chain.append(ce_option)
+            
+            # PE option
+            pe_option = {
+                "optionType": "PE",
+                "strikePrice": strike,
+                "openInterest": pe_oi,
+                "lastPrice": pe_price
+            }
+            option_chain.append(pe_option)
+        
+        # Add total OI to the option chain data for easier PCR calculation
+        option_chain.append({"totalCEOI": total_ce_oi, "totalPEOI": total_pe_oi})
+        
+        return option_chain
+    except Exception as e:
+        logger.error(f"Error generating simulated option chain for {symbol}: {e}")
+        return None
+
+
+def get_pcr_signal(symbol):
+    """Generate trading signal based on PCR value and trend."""
+    if symbol not in pcr_data:
+        return "NEUTRAL", "badge bg-secondary"
+    
+    pcr_value = pcr_data[symbol]["current"]
+    trend = pcr_data[symbol]["trend"]
+    
+    if pcr_value > PCR_BEARISH_THRESHOLD and trend == "RISING":
+        return "BEARISH", "badge bg-danger"
+    elif pcr_value < PCR_BULLISH_THRESHOLD and trend == "FALLING":
+        return "BULLISH", "badge bg-success"
+    else:
+        return "NEUTRAL", "badge bg-secondary"
+
 # ============ Strategy Prediction ============
+# ============ Strategy Prediction Functions ============
 def predict_strategy_for_stock(symbol):
     """
     Predict the most suitable trading strategy for a stock based on its 
@@ -3925,18 +4126,18 @@ def predict_strategy_for_stock(symbol):
         sentiment = market_sentiment.get(symbol, "NEUTRAL")
         overall_sentiment = market_sentiment.get("overall", "NEUTRAL")
         
+        # Check news mentions for this stock
+        news_mentions = news_data.get("mentions", {}).get(symbol, [])
+        has_recent_news = len(news_mentions) > 0
+        
         # ======= IMPROVED STRATEGY SCORING ALGORITHM =======
         # Initialize strategy scores with more comprehensive metrics
         strategy_scores = {
             "SCALP": 0,
             "SWING": 0,
             "MOMENTUM": 0,
-            "NEWS": 0  # Added NEWS strategy
+            "NEWS": 0
         }
-        
-        # Check news mentions for this stock
-        news_mentions = news_data.get("mentions", {}).get(symbol, [])
-        has_recent_news = len(news_mentions) > 0
         
         # ===== SCALPING SUITABILITY FACTORS =====
         # 1. Volatility is key for scalping - moderate is best
@@ -4185,8 +4386,15 @@ def should_enter_trade(option_key):
     strategy_confidence = stocks_data.get(parent_symbol, {}).get("strategy_confidence", 0)
     strategy_score = stocks_data.get(parent_symbol, {}).get("strategy_score", 0)
     
-    # Check for news signals
-    news_signals = [s for s in news_data.get("trading_signals", []) if s.get("stock") == parent_symbol]
+    # Check for news signals - only use news from last 30 minutes
+    current_time = datetime.now()
+    news_signals = []
+    for s in news_data.get("trading_signals", []):
+        if s.get("stock") == parent_symbol and not s.get("executed", False):
+            signal_time = s.get("timestamp")
+            if isinstance(signal_time, datetime) and (current_time - signal_time).total_seconds() < 1800:  # 30 minutes
+                news_signals.append(s)
+    
     news_signal = news_signals[0] if news_signals else None
     
     # Default to determining strategy based on signals
@@ -4307,18 +4515,19 @@ def enter_trade(option_key, strategy_type, trade_source="TECHNICAL"):
     # Use ATR or percentage-based stop loss depending on the strategy
     option_type = option_info["option_type"]
     
+    # Adjust strategy-based parameters
     if strategy_type == "SCALP":
         stop_loss_pct = 0.015  # 1.5% for scalping
-        target_pct = 0.03      # 3% for scalping
+        target_pct = 0.035     # 3.5% for scalping (increased from 3%)
     elif strategy_type == "MOMENTUM":
         stop_loss_pct = 0.02   # 2% for momentum
-        target_pct = 0.05      # 5% for momentum
+        target_pct = 0.06      # 6% for momentum (increased from 5%)
     elif strategy_type == "NEWS":
         stop_loss_pct = 0.025  # 2.5% for news
-        target_pct = 0.10      # 5% for news
+        target_pct = 0.12      # 12% for news (increased from 10%)
     else:  # SWING
         stop_loss_pct = 0.03   # 3% for swing
-        target_pct = 0.08      # 8% for swing
+        target_pct = 0.10      # 10% for swing (increased from 8%)
     
     # Calculate stop loss amount
     stop_loss_amount = current_price * stop_loss_pct
@@ -4725,36 +4934,6 @@ def update_dynamic_target(option_key):
     except Exception as e:
         logger.error(f"Error updating dynamic target for {option_key}: {e}")
 
-def check_time_based_exit(option_key):
-    """Check if we should exit a trade based on time held."""
-    if not trading_state.active_trades.get(option_key, False):
-        return False
-    
-    entry_time = trading_state.entry_time[option_key]
-    strategy_type = trading_state.strategy_type[option_key]
-    current_time = datetime.now()
-    
-    # Calculate time held in minutes
-    time_held = (current_time - entry_time).total_seconds() / 60 if entry_time else 0
-    
-    # Maximum time depends on strategy
-    if strategy_type == "SCALP":
-        max_time = MAX_POSITION_HOLDING_TIME_SCALP
-    elif strategy_type == "MOMENTUM":
-        max_time = MAX_POSITION_HOLDING_TIME_MOMENTUM
-    elif strategy_type == "NEWS":
-        max_time = MAX_POSITION_HOLDING_TIME_NEWS
-    else:  # SWING
-        max_time = MAX_POSITION_HOLDING_TIME_SWING
-    
-    # Check if we've held for the maximum time
-    if time_held >= max_time:
-        logger.info(f"{option_key} maximum holding time reached ({max_time} min). Exiting.")
-        exit_trade(option_key, reason="Time-based exit")
-        return True
-    
-    return False
-
 def exit_trade(option_key, reason="Manual"):
     """Exit a trade for the given option with enhanced P&L tracking."""
     if not trading_state.active_trades.get(option_key, False):
@@ -4857,7 +5036,6 @@ def apply_trading_strategy():
             if should_exit:
                 exit_trade(option_key, reason=reason)
             else:
-                check_time_based_exit(option_key)
                 update_dynamic_stop_loss(option_key)
                 update_dynamic_target(option_key)
     
@@ -4887,7 +5065,7 @@ def apply_trading_strategy():
             
             # Small delay between entries
             time.sleep(0.1)
-
+# ============ Data Fetching ============
 # ============ Data Fetching ============
 def connect_to_broker():
     """Connect to the broker API with improved error handling and retry logic."""
@@ -5489,7 +5667,8 @@ def fetch_data_periodically():
         except Exception as e:
             logger.error(f"Error in fetch_data_periodically: {e}", exc_info=True)
             time.sleep(1)
-
+# ============ Dashboard UI ============
+# Define a modern color scheme for the dashboard
 # ============ Dashboard UI ============
 # Define a modern color scheme for the dashboard
 COLOR_SCHEME = {
@@ -5508,9 +5687,32 @@ COLOR_SCHEME = {
     "border": "#495057"
 }
 
-# Use a modern dark theme
+# Define custom CSS for smooth transitions and animations
+app_css = '''
+/* Add smooth transitions to elements that update frequently */
+.smooth-transition {
+    transition: all 0.3s ease-in-out;
+}
+
+/* Specifically for price changes */
+.price-change {
+    transition: color 0.5s ease, background-color 0.5s ease;
+}
+
+/* For progress bars */
+.progress-bar {
+    transition: width 0.4s ease-in-out;
+}
+
+/* For cards and containers */
+.card, .card-body {
+    transition: border-color 0.5s ease;
+}
+'''
+
+# Initialize Dash app with custom settings and CSS
 app = dash.Dash(
-    __name__, 
+    __name__,  # Using __name__ with double underscores
     external_stylesheets=[dbc.themes.DARKLY], 
     suppress_callback_exceptions=True,
     meta_tags=[
@@ -5518,6 +5720,30 @@ app = dash.Dash(
     ]
 )
 app.title = "Options Trading Dashboard"
+
+# Override the default index string to include custom CSS
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            ''' + app_css + '''
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # Custom CSS for improved UI
 custom_css = {
@@ -6073,6 +6299,7 @@ def create_layout():
 
 # Main application layout with improved UI
 app.layout = create_layout()
+
 
 # ============ Dashboard Callbacks ============
 # Update UI Data Store to centralize data processing
@@ -7439,7 +7666,7 @@ def update_trade_history(n_intervals):
     
     return trade_cards, len(trading_state.trades_history), fig
 
-# Main entry point
+
 def main():
     """Main entry point with error handling"""
     try:
