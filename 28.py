@@ -6052,12 +6052,12 @@ def create_layout():
             # Refresh intervals - more efficient refresh rates
             dcc.Interval(
                 id='fast-interval',
-                interval=1000,  # 1 second for time-sensitive data
+                interval=500,  # 1 second for time-sensitive data
                 n_intervals=0
             ),
             dcc.Interval(
                 id='medium-interval',
-                interval=5000,  # 5 seconds for regular updates
+                interval=1000,  # 5 seconds for regular updates
                 n_intervals=0
             ),
             dcc.Interval(
