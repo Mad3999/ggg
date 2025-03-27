@@ -5688,25 +5688,55 @@ COLOR_SCHEME = {
 }
 
 # Define custom CSS for smooth transitions and animations
+# Find the app_css definition in your code and replace it with this enhanced version:
 app_css = '''
-/* Add smooth transitions to elements that update frequently */
+/* Base transitions for all updating elements */
 .smooth-transition {
     transition: all 0.3s ease-in-out;
 }
 
 /* Specifically for price changes */
-.price-change {
+.price-change, [id*="price"], [id*="change"] {
+    transition: all 0.5s ease;
+}
+
+/* For numeric values that change frequently */
+.numeric-value {
     transition: color 0.5s ease, background-color 0.5s ease;
+}
+
+/* For badges that change state */
+.badge {
+    transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* For progress bars */
 .progress-bar {
-    transition: width 0.4s ease-in-out;
+    transition: width 0.5s ease-in-out;
 }
 
 /* For cards and containers */
 .card, .card-body {
     transition: border-color 0.5s ease;
+}
+
+/* Brief highlight effect for significant changes */
+@keyframes highlight-green {
+    0% { background-color: rgba(40, 167, 69, 0.3); }
+    100% { background-color: transparent; }
+}
+
+@keyframes highlight-red {
+    0% { background-color: rgba(220, 53, 69, 0.3); }
+    100% { background-color: transparent; }
+}
+
+.highlight-positive {
+    animation: highlight-green 1.5s ease-out;
+}
+
+.highlight-negative {
+    animation: highlight-red 1.5s ease-out;
 }
 '''
 
@@ -5893,7 +5923,7 @@ def create_stock_option_card(symbol):
             html.Div([
                 html.H4(symbol, className="text-info d-inline me-1 mb-0"),
                 html.Span(f"({stock_type})", className="text-muted small me-2"),
-                html.Span(id={"type": "data-source-badge", "index": symbol}, className="badge ms-2"),
+                html.Span(id={"type": "data-source-badge", "index": symbol}, className="badge ms-2 smooth-transition"),
                 strategy_badge,
                 history_badge,
                 news_badge,
@@ -5910,37 +5940,37 @@ def create_stock_option_card(symbol):
                 dbc.Col([
                     html.Div([
                         html.Span("Price: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-price", "index": symbol}, className="fs-4 text-light")
+                        html.Span(id={"type": "stock-price", "index": symbol}, className="fs-4 text-light smooth-transition price-change")
                     ], className="mb-2"),
                     html.Div([
                         html.Span("Change: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-change", "index": symbol}, className="text-light")
+                        html.Span(id={"type": "stock-change", "index": symbol}, className="text-light smooth-transition price-change")
                     ], className="mb-1"),
                     html.Div([
                         html.Span("OHLC: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-ohlc", "index": symbol}, className="text-light small")
+                        html.Span(id={"type": "stock-ohlc", "index": symbol}, className="text-light small smooth-transition")
                     ], className="mb-1"),
                 ], width=4),
                 
                 dbc.Col([
                     html.Div([
                         html.Span("PCR: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-pcr", "index": symbol}, className="text-light"),
-                        html.Span(id={"type": "pcr-strength", "index": symbol}, className="ms-2 small")
+                        html.Span(id={"type": "stock-pcr", "index": symbol}, className="text-light smooth-transition numeric-value"),
+                        html.Span(id={"type": "pcr-strength", "index": symbol}, className="ms-2 small smooth-transition")
                     ], className="mb-1"),
                     html.Div([
                         html.Span("Sentiment: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-sentiment", "index": symbol}, className="badge")
+                        html.Span(id={"type": "stock-sentiment", "index": symbol}, className="badge smooth-transition")
                     ], className="mb-1"),
                     html.Div([
                         html.Span("S/R Levels: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-sr-levels", "index": symbol}, className="text-light small")
+                        html.Span(id={"type": "stock-sr-levels", "index": symbol}, className="text-light small smooth-transition")
                     ], className="mb-1"),
                 ], width=4),
                 
                 dbc.Col([
-                    html.Div(id={"type": "stock-last-update", "index": symbol}, className="text-muted small text-end"),
-                    html.Div(id={"type": "strategy-prediction", "index": symbol}, className="text-end small mt-2")
+                    html.Div(id={"type": "stock-last-update", "index": symbol}, className="text-muted small text-end smooth-transition"),
+                    html.Div(id={"type": "strategy-prediction", "index": symbol}, className="text-end small mt-2 smooth-transition")
                 ], width=4)
             ], className="mb-3"),
             
@@ -5951,18 +5981,18 @@ def create_stock_option_card(symbol):
                     html.H6("CALL OPTION", className="text-success mb-2 text-center"),
                     html.Div([
                         html.Span("Strike: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-ce-strike", "index": symbol}, className="text-warning")
+                        html.Span(id={"type": "option-ce-strike", "index": symbol}, className="text-warning smooth-transition")
                     ], className="text-center mb-1"),
                     html.Div([
                         html.Span("LTP: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-ce-price", "index": symbol}, className="fs-5 fw-bold")
+                        html.Span(id={"type": "option-ce-price", "index": symbol}, className="fs-5 fw-bold smooth-transition price-change")
                     ], className="text-center mb-2"),
                     html.Div([
                         html.Span("Signal: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-ce-signal", "index": symbol}, className="badge")
+                        html.Span(id={"type": "option-ce-signal", "index": symbol}, className="badge smooth-transition")
                     ], className="text-center mb-1"),
-                    dbc.Progress(id={"type": "option-ce-strength", "index": symbol}, className="mb-2", style={"height": "6px"}),
-                    html.Div(id={"type": "option-ce-trade-status", "index": symbol}, className="text-center small")
+                    dbc.Progress(id={"type": "option-ce-strength", "index": symbol}, className="mb-2 smooth-transition", style={"height": "6px"}),
+                    html.Div(id={"type": "option-ce-trade-status", "index": symbol}, className="text-center small smooth-transition")
                 ], width=6, className="border-end"),
                 
                 # Put option
@@ -5970,18 +6000,18 @@ def create_stock_option_card(symbol):
                     html.H6("PUT OPTION", className="text-danger mb-2 text-center"),
                     html.Div([
                         html.Span("Strike: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-pe-strike", "index": symbol}, className="text-warning")
+                        html.Span(id={"type": "option-pe-strike", "index": symbol}, className="text-warning smooth-transition")
                     ], className="text-center mb-1"),
                     html.Div([
                         html.Span("LTP: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-pe-price", "index": symbol}, className="fs-5 fw-bold")
+                        html.Span(id={"type": "option-pe-price", "index": symbol}, className="fs-5 fw-bold smooth-transition price-change")
                     ], className="text-center mb-2"),
                     html.Div([
                         html.Span("Signal: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-pe-signal", "index": symbol}, className="badge")
+                        html.Span(id={"type": "option-pe-signal", "index": symbol}, className="badge smooth-transition")
                     ], className="text-center mb-1"),
-                    dbc.Progress(id={"type": "option-pe-strength", "index": symbol}, className="mb-2", style={"height": "6px"}),
-                    html.Div(id={"type": "option-pe-trade-status", "index": symbol}, className="text-center small")
+                    dbc.Progress(id={"type": "option-pe-strength", "index": symbol}, className="mb-2 smooth-transition", style={"height": "6px"}),
+                    html.Div(id={"type": "option-pe-trade-status", "index": symbol}, className="text-center small smooth-transition")
                 ], width=6)
             ])
         ], className="px-4 py-3")
@@ -5989,7 +6019,6 @@ def create_stock_option_card(symbol):
     style=custom_css["card"],
     className="mb-3 border-info"
     )
-
 def create_strategy_settings_card():
     return dbc.Card([
         dbc.CardHeader(html.H4("Strategy Settings", className="text-warning mb-0"), 
@@ -6308,9 +6337,16 @@ app.layout = create_layout()
     [Input('fast-interval', 'n_intervals')]
 )
 def update_ui_data_store(n_intervals):
-    """Centralized data store updates to avoid redundant processing"""
+    """Centralized data store updates with throttling to avoid UI blinking"""
+    # Create a static copy of current UI data store to avoid reference issues
+    current_ui_data = {}
+    for key in ui_data_store:
+        if isinstance(ui_data_store[key], dict):
+            current_ui_data[key] = ui_data_store[key].copy()
+        else:
+            current_ui_data[key] = ui_data_store[key]
     
-    # Copy the current state for UI updates
+    # Create result dictionary
     result = {
         'connection': {
             'status': 'connected' if broker_connected else 'disconnected',
@@ -6321,8 +6357,8 @@ def update_ui_data_store(n_intervals):
         'options': {},
         'pcr': {},
         'sentiment': market_sentiment.copy(),
-        'predicted_strategies': ui_data_store.get('predicted_strategies', {}),
-        'news': ui_data_store.get('news', {}),
+        'predicted_strategies': current_ui_data.get('predicted_strategies', {}),
+        'news': current_ui_data.get('news', {}),
         'trading': {
             'active_trades': sum(1 for v in trading_state.active_trades.values() if v),
             'total_pnl': trading_state.total_pnl,
@@ -6334,17 +6370,101 @@ def update_ui_data_store(n_intervals):
         'strategies': strategy_settings.copy()
     }
     
-    # Add stock data
-    for symbol, data in ui_data_store.get('stocks', {}).items():
-        if symbol in stocks_data:
-            result['stocks'][symbol] = data
+    # Process stock data with change detection
+    for symbol in stocks_data:
+        stock_info = stocks_data[symbol]
+        current_stock_data = current_ui_data.get('stocks', {}).get(symbol, {})
+        
+        # Get current values
+        ltp = stock_info.get("ltp")
+        last_updated = stock_info.get("last_updated")
+        last_updated_str = last_updated.strftime('%H:%M:%S') if last_updated else 'N/A'
+        
+        # Check if data has actually changed
+        prev_price = current_stock_data.get('price')
+        if prev_price == ltp and current_stock_data.get('last_updated') == last_updated_str:
+            # No change detected, keep previous data to avoid UI updates
+            result['stocks'][symbol] = current_stock_data
+            continue
+            
+        # Data has changed, include in update
+        result['stocks'][symbol] = {
+            'price': ltp,
+            'change': stock_info.get("change_percent", 0),
+            'ohlc': {
+                'open': stock_info.get("open"),
+                'high': stock_info.get("high"),
+                'low': stock_info.get("low"),
+                'previous': stock_info.get("previous")
+            },
+            'last_updated': last_updated_str,
+            'has_changed': True if prev_price is not None and ltp != prev_price else False,
+            'change_direction': 'up' if prev_price is not None and ltp > prev_price else 
+                               'down' if prev_price is not None and ltp < prev_price else 'none'
+        }
     
-    # Add options data
-    for symbol, data in ui_data_store.get('options', {}).items():
-        if symbol in stocks_data:
-            result['options'][symbol] = data
+    # Process option data with change detection
+    for symbol in stocks_data:
+        result['options'][symbol] = {}
+        current_option_data = current_ui_data.get('options', {}).get(symbol, {})
+        
+        # Process CE options
+        ce_key = stocks_data[symbol].get("primary_ce")
+        if ce_key and ce_key in options_data:
+            ce_option = options_data[ce_key]
+            current_ce = current_option_data.get('ce', {})
+            
+            # Get current values
+            ce_price = ce_option.get("ltp")
+            
+            # Check if price has changed
+            prev_ce_price = current_ce.get('price')
+            if prev_ce_price == ce_price:
+                # No change, keep previous data
+                result['options'][symbol]['ce'] = current_ce
+            else:
+                # Price changed, update data
+                result['options'][symbol]['ce'] = {
+                    'strike': ce_option.get("strike", "N/A"),
+                    'price': ce_price,
+                    'signal': ce_option.get("signal", 0),
+                    'strength': ce_option.get("strength", 0),
+                    'trend': ce_option.get("trend", "NEUTRAL"),
+                    'using_fallback': ce_option.get("using_fallback", False),
+                    'has_changed': True if prev_ce_price is not None else False,
+                    'change_direction': 'up' if prev_ce_price is not None and ce_price > prev_ce_price else 
+                                       'down' if prev_ce_price is not None and ce_price < prev_ce_price else 'none'
+                }
+        
+        # Process PE options (same logic as CE)
+        pe_key = stocks_data[symbol].get("primary_pe")
+        if pe_key and pe_key in options_data:
+            pe_option = options_data[pe_key]
+            current_pe = current_option_data.get('pe', {})
+            
+            # Get current values
+            pe_price = pe_option.get("ltp")
+            
+            # Check if price has changed
+            prev_pe_price = current_pe.get('price')
+            if prev_pe_price == pe_price:
+                # No change, keep previous data
+                result['options'][symbol]['pe'] = current_pe
+            else:
+                # Price changed, update data
+                result['options'][symbol]['pe'] = {
+                    'strike': pe_option.get("strike", "N/A"),
+                    'price': pe_price,
+                    'signal': pe_option.get("signal", 0),
+                    'strength': pe_option.get("strength", 0),
+                    'trend': pe_option.get("trend", "NEUTRAL"),
+                    'using_fallback': pe_option.get("using_fallback", False),
+                    'has_changed': True if prev_pe_price is not None else False,
+                    'change_direction': 'up' if prev_pe_price is not None and pe_price > prev_pe_price else 
+                                       'down' if prev_pe_price is not None and pe_price < prev_pe_price else 'none'
+                }
     
-    # Add PCR data
+    # Process PCR data (simplified)
     for symbol, data in pcr_data.items():
         if symbol in stocks_data:
             result['pcr'][symbol] = {
@@ -6354,7 +6474,6 @@ def update_ui_data_store(n_intervals):
             }
     
     return result
-
 # Connection status indicator callback
 @app.callback(
     [Output("broker-status", "children"),
@@ -6678,12 +6797,12 @@ def update_strategy_settings(scalp_enabled, swing_enabled, momentum_enabled, new
     else:
         return ["No trading strategies enabled - Trading paused"], 0, 0, 0, 0
 
-# Update Stock Display Callback
 @app.callback(
     [
         Output({"type": "data-source-badge", "index": ALL}, "children"),
         Output({"type": "data-source-badge", "index": ALL}, "className"),
         Output({"type": "stock-price", "index": ALL}, "children"),
+        Output({"type": "stock-price", "index": ALL}, "className"),
         Output({"type": "stock-change", "index": ALL}, "children"),
         Output({"type": "stock-change", "index": ALL}, "className"),
         Output({"type": "stock-ohlc", "index": ALL}, "children"),
@@ -6705,13 +6824,14 @@ def update_stocks_display(data, badge_ids):
             ["Live"] * len(badge_ids),  # data source badges
             ["badge bg-success ms-2 small"] * len(badge_ids),  # source badge classes
             ["Loading..."] * len(badge_ids),  # price outputs
+            ["fs-4 text-light smooth-transition price-change"] * len(badge_ids),  # price class outputs
             ["0.00%"] * len(badge_ids),  # change text outputs
-            ["text-secondary"] * len(badge_ids),  # change class outputs
+            ["text-secondary smooth-transition price-change"] * len(badge_ids),  # change class outputs
             ["OHLC data not available"] * len(badge_ids),  # ohlc outputs
             ["N/A"] * len(badge_ids),  # pcr outputs
             [""] * len(badge_ids),  # pcr strength outputs
             ["NEUTRAL"] * len(badge_ids),  # sentiment text outputs
-            ["badge bg-secondary"] * len(badge_ids),  # sentiment class outputs
+            ["badge bg-secondary smooth-transition"] * len(badge_ids),  # sentiment class outputs
             ["S/R not available"] * len(badge_ids),  # sr levels outputs
             ["Not yet updated"] * len(badge_ids),  # last update outputs
             [""] * len(badge_ids)  # strategy predictions
@@ -6723,6 +6843,7 @@ def update_stocks_display(data, badge_ids):
     source_badges = []
     source_classes = []
     price_outputs = []
+    price_classes = []
     change_text_outputs = []
     change_class_outputs = []
     ohlc_outputs = []
@@ -6737,86 +6858,103 @@ def update_stocks_display(data, badge_ids):
     for symbol in symbols:
         if symbol in stocks_data:
             stock_info = stocks_data[symbol]
-            ltp = stock_info.get("ltp")
+            stock_data = data['stocks'].get(symbol, {})
             
             # Set data source badge
             source_badges.append("Live" if broker_connected else "Offline")
-            source_classes.append("badge bg-success ms-2 small" if broker_connected else "badge bg-warning text-dark ms-2 small")
+            source_classes.append("badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition")
             
-            # Format price
+            # Format price with transition classes
+            ltp = stock_data.get('price')
             if ltp is not None:
                 price_text = f"₹{ltp:.2f}"
                 price_outputs.append(price_text)
+                
+                # Determine highlight class for price changes
+                base_class = "fs-4 text-light smooth-transition price-change"
+                if stock_data.get('has_changed', False):
+                    if stock_data.get('change_direction') == 'up':
+                        highlight_class = f"{base_class} highlight-positive"
+                    elif stock_data.get('change_direction') == 'down':
+                        highlight_class = f"{base_class} highlight-negative"
+                    else:
+                        highlight_class = base_class
+                else:
+                    highlight_class = base_class
+                
+                price_classes.append(highlight_class)
             else:
                 price_outputs.append("Waiting for data...")
+                price_classes.append("fs-4 text-light smooth-transition")
             
-            change_pct = stock_info.get("change_percent", 0)
+            # Format change percentage with transitions
+            change_pct = stock_data.get("change", 0)
+            base_change_class = "smooth-transition price-change"
             
-            # Get OHLC values
-            open_price = stock_info.get("open")
-            high_price = stock_info.get("high")
-            low_price = stock_info.get("low")
-            previous_price = stock_info.get("previous")
-            
-            # Get PCR and sentiment
-            pcr_value = pcr_data.get(symbol, {}).get("current", 1.0)
-            pcr_strength = pcr_data.get(symbol, {}).get("strength", 0)
-            sentiment = market_sentiment.get(symbol, "NEUTRAL")
-            
-            # Format PCR strength indicator
-            if pcr_strength > 0.5:
-                pcr_strength_text = html.Span("↑", className="text-success fw-bold", title="Strong Bullish Signal")
-            elif pcr_strength > 0.2:
-                pcr_strength_text = html.Span("↗", className="text-success", title="Bullish Signal")
-            elif pcr_strength < -0.5:
-                pcr_strength_text = html.Span("↓", className="text-danger fw-bold", title="Strong Bearish Signal")
-            elif pcr_strength < -0.2:
-                pcr_strength_text = html.Span("↘", className="text-danger", title="Bearish Signal")
-            else:
-                pcr_strength_text = html.Span("→", className="text-secondary", title="Neutral Signal")
-            
-            pcr_strength_outputs.append(pcr_strength_text)
-            
-            # Get support/resistance levels
-            support_levels = stock_info.get("support_levels", [])
-            resistance_levels = stock_info.get("resistance_levels", [])
-            
-            # Format change percentage
             if change_pct > 0:
                 change_text_outputs.append(f"+{change_pct:.2f}%")
-                change_class_outputs.append("text-success")
+                change_class_outputs.append(f"text-success {base_change_class}")
             elif change_pct < 0:
                 change_text_outputs.append(f"{change_pct:.2f}%")
-                change_class_outputs.append("text-danger")
+                change_class_outputs.append(f"text-danger {base_change_class}")
             else:
                 change_text_outputs.append("0.00%")
-                change_class_outputs.append("text-warning")
+                change_class_outputs.append(f"text-warning {base_change_class}")
             
-            # Format OHLC
-            if all(x is not None for x in [open_price, high_price, low_price, previous_price]):
-                ohlc_text = f"O: {open_price:.2f} H: {high_price:.2f} L: {low_price:.2f} P: {previous_price:.2f}"
+            # Format OHLC with smooth transitions
+            ohlc_data = stock_data.get('ohlc', {})
+            if all(x is not None for x in [
+                ohlc_data.get('open'), 
+                ohlc_data.get('high'), 
+                ohlc_data.get('low'), 
+                ohlc_data.get('previous')
+            ]):
+                ohlc_text = f"O: {ohlc_data['open']:.2f} H: {ohlc_data['high']:.2f} L: {ohlc_data['low']:.2f} P: {ohlc_data['previous']:.2f}"
                 ohlc_outputs.append(ohlc_text)
             else:
                 ohlc_outputs.append("OHLC data not available")
             
-            # Format PCR
+            # Format PCR with smooth transitions
+            pcr_value = data['pcr'].get(symbol, {}).get('current', 1.0)
             pcr_text = f"{pcr_value:.2f}"
             pcr_outputs.append(pcr_text)
             
-            # Format sentiment
+            # Format PCR strength indicator with transitions
+            pcr_strength = data['pcr'].get(symbol, {}).get('strength', 0)
+            if pcr_strength > 0.5:
+                pcr_strength_text = html.Span("↑", className="text-success fw-bold smooth-transition", title="Strong Bullish Signal")
+            elif pcr_strength > 0.2:
+                pcr_strength_text = html.Span("↗", className="text-success smooth-transition", title="Bullish Signal")
+            elif pcr_strength < -0.5:
+                pcr_strength_text = html.Span("↓", className="text-danger fw-bold smooth-transition", title="Strong Bearish Signal")
+            elif pcr_strength < -0.2:
+                pcr_strength_text = html.Span("↘", className="text-danger smooth-transition", title="Bearish Signal")
+            else:
+                pcr_strength_text = html.Span("→", className="text-secondary smooth-transition", title="Neutral Signal")
+            
+            pcr_strength_outputs.append(pcr_strength_text)
+            
+            # Format sentiment with smooth transitions
+            sentiment = data['sentiment'].get(symbol, "NEUTRAL")
             sentiment_text_outputs.append(sentiment)
+            
+            base_sentiment_class = "badge smooth-transition"
             if "BULLISH" in sentiment:
                 if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append("badge bg-success")
+                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success")
                 else:
-                    sentiment_class_outputs.append("badge bg-success bg-opacity-75")
+                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success bg-opacity-75")
             elif "BEARISH" in sentiment:
                 if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append("badge bg-danger")
+                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger")
                 else:
-                    sentiment_class_outputs.append("badge bg-danger bg-opacity-75")
+                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger bg-opacity-75")
             else:
-                sentiment_class_outputs.append("badge bg-secondary")
+                sentiment_class_outputs.append(f"{base_sentiment_class} bg-secondary")
+            
+            # Get support/resistance levels
+            support_levels = stock_info.get("support_levels", [])
+            resistance_levels = stock_info.get("resistance_levels", [])
             
             # Format support/resistance levels
             if support_levels and resistance_levels:
@@ -6829,12 +6967,7 @@ def update_stocks_display(data, badge_ids):
                 sr_levels_outputs.append("S/R not available")
             
             # Format last update time
-            last_update_time = stock_info.get("last_updated")
-            if last_update_time:
-                update_text = f"Updated: {last_update_time.strftime('%H:%M:%S')}"
-                last_update_outputs.append(update_text)
-            else:
-                last_update_outputs.append("Not yet updated")
+            last_update_outputs.append(f"Updated: {stock_data.get('last_updated', 'N/A')}")
             
             # Format strategy prediction
             predicted_strategy = stock_info.get("predicted_strategy")
@@ -6844,7 +6977,7 @@ def update_stocks_display(data, badge_ids):
                 strategy_class = "text-success font-weight-bold" if strategy_confidence > 0.7 else "text-info"
                 strategy_pred_text = html.Div([
                     html.Span("Predicted strategy: ", className="text-muted"),
-                    html.Span(f"{predicted_strategy} ({strategy_confidence:.1%})", className=strategy_class)
+                    html.Span(f"{predicted_strategy} ({strategy_confidence:.1%})", className=f"{strategy_class} smooth-transition")
                 ])
                 strategy_prediction_outputs.append(strategy_pred_text)
             else:
@@ -6853,23 +6986,25 @@ def update_stocks_display(data, badge_ids):
         else:
             # Default values if stock not found
             source_badges.append("Live" if broker_connected else "Offline")
-            source_classes.append("badge bg-success ms-2 small" if broker_connected else "badge bg-warning text-dark ms-2 small")
+            source_classes.append("badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition")
             price_outputs.append("N/A")
+            price_classes.append("fs-4 text-light smooth-transition")
             change_text_outputs.append("0.00%")
-            change_class_outputs.append("text-warning")
+            change_class_outputs.append("text-warning smooth-transition price-change")
             ohlc_outputs.append("OHLC data not available")
             pcr_outputs.append("N/A")
             pcr_strength_outputs.append("")
             sentiment_text_outputs.append("NEUTRAL")
-            sentiment_class_outputs.append("badge bg-secondary")
+            sentiment_class_outputs.append("badge bg-secondary smooth-transition")
             sr_levels_outputs.append("S/R not available")
             last_update_outputs.append("Not found")
             strategy_prediction_outputs.append("")
     
-    return (
+    return [
         source_badges,
         source_classes,
         price_outputs,
+        price_classes,
         change_text_outputs,
         change_class_outputs,
         ohlc_outputs,
@@ -6880,8 +7015,7 @@ def update_stocks_display(data, badge_ids):
         sr_levels_outputs,
         last_update_outputs,
         strategy_prediction_outputs
-    )
-
+    ]
 @app.callback(
     [
         Output("notification-toast", "is_open", allow_duplicate=True),
