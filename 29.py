@@ -6315,4 +6315,672 @@ def create_stock_option_card(symbol):
                     dbc.Progress(id={"type": "option-pe-strength", "index": symbol}, className="mb-2 smooth-transition", style={"height": "6px"}),
                     html.Div(id={"type": "option-pe-trade-status", "index": symbol}, className="text-center small smooth-transition")
                 ], width=6)
+            ]),
+        
+        # Option trading buttons row
+        dbc.Row([
+            # CE Trade buttons
+            dbc.Col([
+                dbc.Button("Trade CE", id={"type": "trade-ce-btn", "index": symbol}, 
+                           color="success", size="sm", className="w-100"),
+            ], width=6, className="pe-1"),
+            
+            # PE Trade buttons
+            dbc.Col([
+                dbc.Button("Trade PE", id={"type": "trade-pe-btn", "index": symbol}, 
+                           color="danger", size="sm", className="w-100"),
+            ], width=6, className="ps-1"),
+        ], className="mt-2")
+    ], className="px-4 py-3")
+    ], 
+    style=custom_css["card"],
+    className="mb-3",
+    id={"type": "stock-card", "index": symbol}
+    )
+
+# ============ Callback Functions ============
+@app.callback(
+    Output('stock-cards-container', 'children'),
+    [Input('medium-interval', 'n_intervals')],
+    prevent_initial_call=False
+)
+def update_stock_cards_container(n_intervals):
+    """Update the container with all stock cards based on current stocks_data."""
+    if not dashboard_initialized:
+        return html.Div("Dashboard initializing...", className="text-center text-light p-5")
+    
+    cards = []
+    
+    # Sort symbols: first indices, then stocks alphabetically
+    sorted_symbols = sorted(stocks_data.keys(), key=lambda s: (0 if stocks_data[s].get("type") == "INDEX" else 1, s))
+    
+    # Create a row for every 3 stocks
+    for i in range(0, len(sorted_symbols), 3):
+        row_symbols = sorted_symbols[i:i+3]
+        row = dbc.Row([
+            dbc.Col(create_stock_option_card(symbol), width=4) 
+            for symbol in row_symbols
+        ], className="mb-3")
+        cards.append(row)
+    
+    if not cards:
+        return html.Div("No stocks added. Use the controls above to add stocks.", 
+                     className="text-center text-muted p-5")
+    
+    return html.Div(cards)
+
+@app.callback(
+    [
+        Output('broker-status', 'children'),
+        Output('broker-status', 'className'),
+        Output('last-connection-time', 'children'),
+        Output('connection-details', 'children')
+    ],
+    [Input('fast-interval', 'n_intervals')],
+    prevent_initial_call=False
+)
+def update_connection_status(n_intervals):
+    """Update connection status information."""
+    if broker_connected:
+        status = "Connected"
+        status_class = "badge bg-success"
+        last_time = last_connection_time.strftime('%H:%M:%S') if last_connection_time else "Never"
+        details = "Trading operations are active. All features available."
+    else:
+        status = "Disconnected"
+        status_class = "badge bg-danger"
+        last_time = last_connection_time.strftime('%H:%M:%S') if last_connection_time else "Never"
+        details = [
+            html.Span("Error: ", className="text-danger"),
+            html.Span(broker_error_message or "Connection failed. Click retry to attempt reconnection.")
+        ]
+    
+    return status, status_class, last_time, details
+
+@app.callback(
+    [
+        Output('total-pnl', 'children'),
+        Output('total-pnl', 'className'),
+        Output('daily-pnl', 'children'),
+        Output('daily-pnl', 'className'),
+        Output('win-rate', 'children'),
+        Output('trades-today', 'children')
+    ],
+    [Input('fast-interval', 'n_intervals')],
+    prevent_initial_call=False
+)
+def update_performance_metrics(n_intervals):
+    """Update performance metrics."""
+    # Total P&L
+    total_pnl = trading_state.total_pnl
+    total_class = "fs-4 text-success fw-bold" if total_pnl >= 0 else "fs-4 text-danger fw-bold"
+    
+    # Daily P&L
+    daily_pnl = trading_state.daily_pnl
+    daily_class = "fs-4 text-success fw-bold" if daily_pnl >= 0 else "fs-4 text-danger fw-bold"
+    
+    # Win rate
+    total_trades = trading_state.wins + trading_state.losses
+    win_rate = f"{trading_state.wins}/{total_trades} ({trading_state.wins/total_trades*100:.1f}%)" if total_trades > 0 else "N/A"
+    
+    # Trades today
+    trades_today = f"{trading_state.trades_today}/{MAX_TRADES_PER_DAY}"
+    
+    return f"₹{total_pnl:.2f}", total_class, f"₹{daily_pnl:.2f}", daily_class, win_rate, trades_today
+
+@app.callback(
+    [
+        Output('overall-sentiment', 'children'),
+        Output('overall-sentiment', 'className'),
+        Output('bullish-strength', 'value'),
+        Output('bull-bear-ratio', 'children')
+    ],
+    [Input('medium-interval', 'n_intervals')],
+    prevent_initial_call=False
+)
+def update_market_sentiment(n_intervals):
+    """Update market sentiment indicators."""
+    overall = market_sentiment.get("overall", "NEUTRAL")
+    
+    # Determine badge class based on sentiment
+    if "BULLISH" in overall:
+        badge_class = "badge bg-success fs-5"
+        if "STRONGLY" in overall:
+            strength = 80
+        else:
+            strength = 65
+    elif "BEARISH" in overall:
+        badge_class = "badge bg-danger fs-5"
+        if "STRONGLY" in overall:
+            strength = 20
+        else:
+            strength = 35
+    else:
+        badge_class = "badge bg-secondary fs-5"
+        strength = 50
+    
+    # Count bullish and bearish stocks
+    bullish_count = 0
+    bearish_count = 0
+    
+    for sentiment in market_sentiment.values():
+        if "BULLISH" in sentiment:
+            bullish_count += 1
+        elif "BEARISH" in sentiment:
+            bearish_count += 1
+    
+    # Calculate ratio
+    total = bullish_count + bearish_count
+    if total > 0:
+        ratio = f"{bullish_count} : {bearish_count}"
+    else:
+        ratio = "N/A"
+    
+    return overall, badge_class, strength, ratio
+
+@app.callback(
+    [
+        Output({'type': 'stock-price', 'index': MATCH}, 'children'),
+        Output({'type': 'stock-price', 'index': MATCH}, 'className'),
+        Output({'type': 'stock-change', 'index': MATCH}, 'children'),
+        Output({'type': 'stock-change', 'index': MATCH}, 'className'),
+        Output({'type': 'stock-ohlc', 'index': MATCH}, 'children'),
+        Output({'type': 'stock-last-update', 'index': MATCH}, 'children'),
+        Output({'type': 'data-source-badge', 'index': MATCH}, 'children'),
+        Output({'type': 'data-source-badge', 'index': MATCH}, 'className')
+    ],
+    [Input('ui-data-store', 'data')],
+    [State({'type': 'stock-price', 'index': MATCH}, 'id')]
+)
+def update_stock_data(data, id_dict):
+    """Update stock data in card."""
+    symbol = id_dict['index']
+    
+    if not data or 'stocks' not in data or symbol not in data['stocks']:
+        return "N/A", "fs-4 text-muted", "N/A", "text-muted", "N/A", "Last update: N/A", "No Data", "badge bg-secondary ms-2"
+    
+    stock_data = data['stocks'][symbol]
+    
+    # Format price
+    price = stock_data.get('price')
+    price_class = "fs-4 text-light price-change"
+    
+    # Format change percentage
+    change = stock_data.get('change', 0)
+    
+    if change > 0:
+        change_text = f"+{change:.2f}%"
+        change_class = "text-success fw-bold"
+    elif change < 0:
+        change_text = f"{change:.2f}%"
+        change_class = "text-danger fw-bold"
+    else:
+        change_text = "0.00%"
+        change_class = "text-muted"
+    
+    # Format OHLC
+    ohlc_data = stock_data.get('ohlc', {})
+    ohlc_text = f"O:{ohlc_data.get('open', 0):.1f} H:{ohlc_data.get('high', 0):.1f} L:{ohlc_data.get('low', 0):.1f} P:{ohlc_data.get('previous', 0):.1f}"
+    
+    # Format last update
+    last_updated = stock_data.get('last_updated', 'N/A')
+    last_update_text = f"Last update: {last_updated}"
+    
+    # Data source badge
+    has_fallback = stock_data.get('using_fallback', False)
+    if has_fallback:
+        source_text = "Simulated"
+        source_class = "badge bg-warning ms-2"
+    else:
+        source_text = "Live"
+        source_class = "badge bg-success ms-2"
+    
+    return f"{price:.2f}", price_class, change_text, change_class, ohlc_text, last_update_text, source_text, source_class
+
+@app.callback(
+    [
+        Output({'type': 'stock-pcr', 'index': MATCH}, 'children'),
+        Output({'type': 'pcr-strength', 'index': MATCH}, 'children'),
+        Output({'type': 'stock-sentiment', 'index': MATCH}, 'children'),
+        Output({'type': 'stock-sentiment', 'index': MATCH}, 'className'),
+        Output({'type': 'stock-sr-levels', 'index': MATCH}, 'children')
+    ],
+    [Input('medium-interval', 'n_intervals')],
+    [State({'type': 'stock-pcr', 'index': MATCH}, 'id')]
+)
+def update_stock_indicators(n_intervals, id_dict):
+    """Update stock technical indicators."""
+    symbol = id_dict['index']
+    
+    # PCR value with strength indicator
+    pcr_value = pcr_data.get(symbol, {}).get("current", 1.0)
+    pcr_strength = pcr_data.get(symbol, {}).get("strength", 0)
+    
+    # PCR strength indicator
+    if pcr_strength > 0.5:
+        strength_text = "↑ Bullish"
+        strength_class = "text-success small"
+    elif pcr_strength < -0.5:
+        strength_text = "↓ Bearish"
+        strength_class = "text-danger small"
+    else:
+        strength_text = "→ Neutral"
+        strength_class = "text-muted small"
+    
+    # Format sentiment
+    sentiment = market_sentiment.get(symbol, "NEUTRAL")
+    
+    if "BULLISH" in sentiment:
+        sentiment_class = "badge bg-success"
+    elif "BEARISH" in sentiment:
+        sentiment_class = "badge bg-danger"
+    else:
+        sentiment_class = "badge bg-secondary"
+    
+    # S/R levels
+    if symbol in stocks_data:
+        support_levels = stocks_data[symbol].get("support_levels", [])
+        resistance_levels = stocks_data[symbol].get("resistance_levels", [])
+        
+        if support_levels and resistance_levels:
+            s_levels = ", ".join([f"{s:.1f}" for s in support_levels[:2]])
+            r_levels = ", ".join([f"{r:.1f}" for r in resistance_levels[:2]])
+            sr_text = f"S: {s_levels} | R: {r_levels}"
+        else:
+            sr_text = "Calculating..."
+    else:
+        sr_text = "N/A"
+    
+    return f"{pcr_value:.2f}", html.Span(strength_text, className=strength_class), sentiment, sentiment_class, sr_text
+
+@app.callback(
+    [
+        Output({'type': 'option-ce-strike', 'index': MATCH}, 'children'),
+        Output({'type': 'option-ce-price', 'index': MATCH}, 'children'),
+        Output({'type': 'option-ce-price', 'index': MATCH}, 'className'),
+        Output({'type': 'option-ce-signal', 'index': MATCH}, 'children'),
+        Output({'type': 'option-ce-signal', 'index': MATCH}, 'className'),
+        Output({'type': 'option-ce-strength', 'index': MATCH}, 'value'),
+        Output({'type': 'option-ce-strength', 'index': MATCH}, 'color'),
+        Output({'type': 'option-ce-trade-status', 'index': MATCH}, 'children'),
+        
+        Output({'type': 'option-pe-strike', 'index': MATCH}, 'children'),
+        Output({'type': 'option-pe-price', 'index': MATCH}, 'children'),
+        Output({'type': 'option-pe-price', 'index': MATCH}, 'className'),
+        Output({'type': 'option-pe-signal', 'index': MATCH}, 'children'),
+        Output({'type': 'option-pe-signal', 'index': MATCH}, 'className'),
+        Output({'type': 'option-pe-strength', 'index': MATCH}, 'value'),
+        Output({'type': 'option-pe-strength', 'index': MATCH}, 'color'),
+        Output({'type': 'option-pe-trade-status', 'index': MATCH}, 'children')
+    ],
+    [Input('ui-data-store', 'data')],
+    [State({'type': 'option-ce-price', 'index': MATCH}, 'id')]
+)
+def update_option_data(data, id_dict):
+    """Update option data in card."""
+    symbol = id_dict['index']
+    
+    if not data or 'options' not in data or symbol not in data['options']:
+        return (
+            "N/A", "N/A", "fs-5 text-muted", "N/A", "badge bg-secondary", 0, "secondary", None,
+            "N/A", "N/A", "fs-5 text-muted", "N/A", "badge bg-secondary", 0, "secondary", None
+        )
+    
+    options_data = data['options'][symbol]
+    
+    # CE option data
+    ce_data = options_data.get('ce', {})
+    ce_strike = ce_data.get('strike', 'N/A')
+    ce_price = ce_data.get('price', 'N/A')
+    
+    # Format CE price
+    if ce_price != 'N/A':
+        ce_price_text = f"{ce_price:.2f}"
+        ce_price_class = "fs-5 fw-bold text-light price-change"
+        
+        # Add color indication if we have direction info
+        if 'change_direction' in ce_data:
+            if ce_data['change_direction'] == 'up':
+                ce_price_class = "fs-5 fw-bold text-success price-change"
+            elif ce_data['change_direction'] == 'down':
+                ce_price_class = "fs-5 fw-bold text-danger price-change"
+    else:
+        ce_price_text = "N/A"
+        ce_price_class = "fs-5 text-muted"
+    
+    # CE signal
+    ce_signal = ce_data.get('signal', 0)
+    ce_strength = ce_data.get('strength', 0)
+    ce_trend = ce_data.get('trend', 'NEUTRAL')
+    
+    # Format CE signal
+    if "BULLISH" in ce_trend:
+        ce_signal_class = "badge bg-success"
+        ce_strength_color = "success"
+    elif "BEARISH" in ce_trend:
+        ce_signal_class = "badge bg-danger"
+        ce_strength_color = "danger"
+    else:
+        ce_signal_class = "badge bg-secondary"
+        ce_strength_color = "secondary"
+    
+    # CE trade status
+    ce_key = stocks_data.get(symbol, {}).get("primary_ce")
+    ce_trade_active = ce_key and trading_state.active_trades.get(ce_key, False)
+    
+    if ce_trade_active:
+        ce_status = html.Span("IN TRADE", className="text-success fw-bold")
+    else:
+        ce_status = None
+    
+    # PE option data
+    pe_data = options_data.get('pe', {})
+    pe_strike = pe_data.get('strike', 'N/A')
+    pe_price = pe_data.get('price', 'N/A')
+    
+    # Format PE price
+    if pe_price != 'N/A':
+        pe_price_text = f"{pe_price:.2f}"
+        pe_price_class = "fs-5 fw-bold text-light price-change"
+        
+        # Add color indication if we have direction info
+        if 'change_direction' in pe_data:
+            if pe_data['change_direction'] == 'up':
+                pe_price_class = "fs-5 fw-bold text-success price-change"
+            elif pe_data['change_direction'] == 'down':
+                pe_price_class = "fs-5 fw-bold text-danger price-change"
+    else:
+        pe_price_text = "N/A"
+        pe_price_class = "fs-5 text-muted"
+    
+    # PE signal
+    pe_signal = pe_data.get('signal', 0)
+    pe_strength = pe_data.get('strength', 0)
+    pe_trend = pe_data.get('trend', 'NEUTRAL')
+    
+    # Format PE signal
+    if "BULLISH" in pe_trend:
+        pe_signal_class = "badge bg-success"
+        pe_strength_color = "success"
+    elif "BEARISH" in pe_trend:
+        pe_signal_class = "badge bg-danger"
+        pe_strength_color = "danger"
+    else:
+        pe_signal_class = "badge bg-secondary"
+        pe_strength_color = "secondary"
+    
+    # PE trade status
+    pe_key = stocks_data.get(symbol, {}).get("primary_pe")
+    pe_trade_active = pe_key and trading_state.active_trades.get(pe_key, False)
+    
+    if pe_trade_active:
+        pe_status = html.Span("IN TRADE", className="text-danger fw-bold")
+    else:
+        pe_status = None
+    
+    return (
+        ce_strike, ce_price_text, ce_price_class, ce_trend, ce_signal_class, ce_strength * 10, ce_strength_color, ce_status,
+        pe_strike, pe_price_text, pe_price_class, pe_trend, pe_signal_class, pe_strength * 10, pe_strength_color, pe_status
+    )
+
+@app.callback(
+    Output({'type': 'strategy-prediction', 'index': MATCH}, 'children'),
+    [Input('ui-data-store', 'data')],
+    [State({'type': 'strategy-prediction', 'index': MATCH}, 'id')]
+)
+def update_strategy_prediction(data, id_dict):
+    """Update strategy prediction for a stock."""
+    symbol = id_dict['index']
+    
+    if 'predicted_strategies' not in data or symbol not in data['predicted_strategies']:
+        return None
+    
+    strategy_data = data['predicted_strategies'][symbol]
+    strategy = strategy_data.get('strategy', "NONE")
+    confidence = strategy_data.get('confidence', 0)
+    
+    if strategy == "NONE" or confidence < 0.6:
+        return None
+    
+    # Format strategy prediction
+    if strategy == "SCALP":
+        strategy_color = "success"
+    elif strategy == "MOMENTUM":
+        strategy_color = "info"
+    elif strategy == "SWING":
+        strategy_color = "primary"
+    elif strategy == "NEWS":
+        strategy_color = "warning"
+    else:
+        strategy_color = "secondary"
+    
+    return html.Div([
+        html.Span(f"Best Strategy: ", className="text-muted"),
+        html.Span(strategy, className=f"badge bg-{strategy_color} me-1"),
+        html.Span(f"({confidence:.0%})", className="small text-light")
+    ])
+
+@app.callback(
+    [
+        Output('active-trades-container', 'children'),
+        Output('active-trades-count', 'children')
+    ],
+    [Input('fast-interval', 'n_intervals')]
+)
+def update_active_trades(n_intervals):
+    """Update the active trades display."""
+    active_trades = []
+    
+    for option_key, is_active in trading_state.active_trades.items():
+        if not is_active or option_key not in options_data:
+            continue
+        
+        option_info = options_data[option_key]
+        parent_symbol = option_info.get("parent_symbol", "")
+        option_type = option_info.get("option_type", "")
+        strike = option_info.get("strike", "")
+        expiry = option_info.get("expiry", "")
+        current_price = option_info.get("ltp", 0)
+        
+        # Get trade details
+        entry_price = trading_state.entry_price[option_key]
+        entry_time = trading_state.entry_time[option_key]
+        stop_loss = trading_state.stop_loss[option_key]
+        target = trading_state.target[option_key]
+        quantity = trading_state.quantity[option_key]
+        strategy_type = trading_state.strategy_type[option_key]
+        
+        # Calculate P&L
+        if option_type == "CE":
+            pnl = (current_price - entry_price) * quantity
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+        else:  # PE
+            pnl = (entry_price - current_price) * quantity
+            pnl_pct = ((entry_price - current_price) / entry_price) * 100 if entry_price > 0 else 0
+        
+        # Format duration
+        duration_seconds = (datetime.now() - entry_time).total_seconds() if entry_time else 0
+        hours, remainder = divmod(int(duration_seconds), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if hours > 0:
+            duration_text = f"{hours}h {minutes}m {seconds}s"
+        else:
+            duration_text = f"{minutes}m {seconds}s"
+        
+        # Create trade card
+        card_color = "success" if option_type == "CE" else "danger"
+        
+        trade_card = dbc.Card([
+            dbc.CardHeader([
+                html.Div([
+                    html.Span(f"{parent_symbol} {strike} {option_type}", className="fw-bold me-2"),
+                    html.Span(f"({strategy_type})", className="small text-muted"),
+                    html.Span(duration_text, className="badge bg-info float-end")
+                ])
+            ], className=f"bg-{card_color} bg-opacity-25 py-2"),
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.Div([
+                            html.Span("Price: ", className="text-muted me-1"),
+                            html.Span(f"{current_price:.2f}", className="fw-bold")
+                        ], className="small"),
+                        html.Div([
+                            html.Span("Entry: ", className="text-muted me-1"),
+                            html.Span(f"{entry_price:.2f}", className="text-light")
+                        ], className="small"),
+                    ], width=4),
+                    dbc.Col([
+                        html.Div([
+                            html.Span("P&L: ", className="text-muted me-1"),
+                            html.Span(f"₹{pnl:.2f} ({pnl_pct:.1f}%)", 
+                                    className="text-success fw-bold" if pnl >= 0 else "text-danger fw-bold")
+                        ], className="small"),
+                        html.Div([
+                            html.Span("Qty: ", className="text-muted me-1"),
+                            html.Span(f"{quantity}", className="text-light")
+                        ], className="small"),
+                    ], width=4),
+                    dbc.Col([
+                        html.Div([
+                            html.Span("SL: ", className="text-muted me-1"),
+                            html.Span(f"{stop_loss:.2f}", className="text-danger")
+                        ], className="small"),
+                        html.Div([
+                            html.Span("Target: ", className="text-muted me-1"),
+                            html.Span(f"{target:.2f}", className="text-success")
+                        ], className="small"),
+                    ], width=4)
+                ]),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Button("Exit Trade", 
+                                 id={"type": "exit-trade-btn", "index": option_key},
+                                 color="warning", size="sm", className="w-100 mt-2")
+                    ], width=12)
+                ])
+            ], className="py-2")
+        ], className="mb-2 border-light")
+        
+        active_trades.append(trade_card)
+    
+    if not active_trades:
+        return html.Div("No active trades at the moment.", className="text-center text-muted my-3"), "0"
+    
+    return html.Div(active_trades), str(len(active_trades))
+
+@app.callback(
+    [
+        Output('recent-trades-container', 'children'),
+        Output('recent-trades-count', 'children')
+    ],
+    [Input('medium-interval', 'n_intervals')]
+)
+def update_recent_trades(n_intervals):
+    """Update recent trades display."""
+    if not trading_state.trades_history:
+        return html.Div("No trades completed yet.", className="text-center text-muted my-3"), "0"
+    
+    # Show only the most recent trades (up to 10)
+    recent_trades = trading_state.trades_history[-10:][::-1]  # Reverse to show newest first
+    
+    trade_items = []
+    for trade in recent_trades:
+        parent_symbol = trade.get('parent_symbol', '')
+        option_type = trade.get('option_type', '')
+        strategy_type = trade.get('strategy_type', '')
+        pnl = trade.get('pnl', 0)
+        pnl_pct = trade.get('pnl_pct', 0)
+        duration_minutes = trade.get('duration_minutes', 0)
+        reason = trade.get('reason', 'Unknown')
+        
+        # Format time
+        exit_time = trade.get('exit_time', datetime.now())
+        time_str = exit_time.strftime('%H:%M:%S')
+        
+        # Create trade item
+        if pnl >= 0:
+            item_color = "success"
+            icon = "✓"
+        else:
+            item_color = "danger"
+            icon = "✗"
+        
+        trade_item = html.Div([
+            html.Div([
+                html.Span(f"{icon} {parent_symbol} {option_type}", className=f"text-{item_color} fw-bold me-2"),
+                html.Span(f"({strategy_type})", className="small text-muted"),
+                html.Div([
+                    html.Span(f"₹{pnl:.2f} ({pnl_pct:.1f}%)", className=f"text-{item_color} fw-bold me-2"),
+                    html.Span(f"{time_str}", className="small text-muted")
+                ]),
+                html.Div([
+                    html.Span(f"{duration_minutes:.1f}min", className="small text-light me-2"),
+                    html.Span(f"Exit: {reason}", className="small text-muted")
+                ])
             ])
+        ], className=f"mb-2 pb-2 border-bottom border-{item_color} border-opacity-25")
+        
+        trade_items.append(trade_item)
+    
+    return html.Div(trade_items), str(len(trading_state.trades_history))
+
+@app.callback(
+    Output('pnl-graph', 'figure'),
+    [Input('slow-interval', 'n_intervals')]
+)
+def update_pnl_graph(n_intervals):
+    """Update P&L history graph."""
+    if not trading_state.trades_history:
+        # Create empty graph with placeholder
+        return {
+            'data': [],
+            'layout': {
+                'title': {
+                    'text': 'No trade history yet',
+                    'font': {'color': COLOR_SCHEME["text_muted"]}
+                },
+                'paper_bgcolor': 'rgba(0,0,0,0)',
+                'plot_bgcolor': 'rgba(0,0,0,0)',
+                'xaxis': {
+                    'visible': False,
+                },
+                'yaxis': {
+                    'visible': False
+                }
+            }
+        }
+    
+    # Extract trade data points
+    timestamps = []
+    cumulative_pnl = []
+    colors = []
+    
+    running_total = 0
+    for trade in trading_state.trades_history:
+        running_total += trade.get('pnl', 0)
+        timestamps.append(trade.get('exit_time', datetime.now()))
+        cumulative_pnl.append(running_total)
+        colors.append('green' if running_total >= 0 else 'red')
+    
+    # Create line trace
+    trace = go.Scatter(
+        x=timestamps,
+        y=cumulative_pnl,
+        mode='lines+markers',
+        name='Cumulative P&L',
+        line={
+            'color': 'rgb(75, 192, 192)',
+            'width': 2
+        },
+        marker={
+            'color': colors,
+            'size': 6
+        }
+    )
+    
+    # Create layout
+    layout = {
+        'margin': {'l': 40, 'r': 40, 't': 20, 'b': 30},
+        'paper_bgcolor': 'rgba(0,0,0,0)',
