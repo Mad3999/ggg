@@ -34,18 +34,19 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ============ Logging Setup ============
-os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(),
         logging.FileHandler(f"logs/trading_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", 
                           mode='a', encoding='utf-8')
     ]
 )
 logger = logging.getLogger("trading_dashboard")
 
+# Create logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
 # ============ Rate Limiting and Retry Logic ============
 class RateLimitHandler:
     def __init__(self, max_requests=1, time_window=1, initial_backoff=1, max_backoff=60):
@@ -355,6 +356,204 @@ ui_data_store = {
     'predicted_strategies': {},  # Added for strategy predictions
     'news': {}  # Added for news data
 }
+
+def load_symbols_from_csv(csv_path):
+    """
+    Load stock and option symbols from CSV file
+    
+    Args:
+        csv_path (str): Path to the CSV file
+    
+    Returns:
+        tuple: Lists of stock and option data
+    """
+    try:
+        logger.info(f"Loading symbols from {csv_path}")
+        df = pd.read_csv(csv_path)
+        
+        # Check if required columns exist
+        required_columns = ['token', 'symbol', 'name', 'expiry', 'strike', 'exch_seg']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            logger.error(f"Missing required columns in CSV: {missing_columns}")
+            return [], []
+        
+        # Process stocks (NSE segment)
+        stocks = df[df['exch_seg'] == 'NSE'].copy()
+        
+        # Process options (NFO segment)
+        options = df[df['exch_seg'] == 'NFO'].copy()
+        
+        # Convert to list of dictionaries for easier processing
+        stocks_list = stocks.to_dict('records')
+        options_list = options.to_dict('records')
+        
+        logger.info(f"Loaded {len(stocks_list)} stocks and {len(options_list)} options from CSV")
+        return stocks_list, options_list
+    
+    except Exception as e:
+        logger.error(f"Error loading symbols from CSV: {e}", exc_info=True)
+        return [], []
+
+def add_stock_from_csv_data(stock_data):
+    """
+    Add a stock to the tracking system from CSV data
+    
+    Args:
+        stock_data (dict): Stock data from CSV
+        
+    Returns:
+        bool: Success or failure
+    """
+    try:
+        symbol = stock_data.get('symbol')
+        token = stock_data.get('token')
+        name = stock_data.get('name')
+        exchange = stock_data.get('exch_seg', 'NSE')
+        
+        if not symbol or not token:
+            logger.warning(f"Missing required data for stock: {stock_data}")
+            return False
+        
+        # Create stock entry in the global dictionary
+        stocks_data[symbol] = {
+            "token": token,
+            "exchange": exchange,
+            "symbol": symbol,
+            "name": name,
+            "type": "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK",
+            "ltp": None,
+            "previous": None,
+            "high": None,
+            "low": None,
+            "open": None,
+            "change_percent": 0,
+            "movement_pct": 0,
+            "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open', 'high', 'low']),
+            "support_levels": [],
+            "resistance_levels": [],
+            "last_sr_update": None,
+            "strategy_enabled": {
+                "SCALP": True,
+                "SWING": True,
+                "MOMENTUM": True,
+                "NEWS": True
+            },
+            "options": {
+                "CE": [],
+                "PE": []
+            },
+            "primary_ce": None,
+            "primary_pe": None,
+            "last_updated": None,
+            "data_source": "broker",
+            "predicted_strategy": None,
+            "strategy_confidence": 0,
+        }
+        
+        logger.info(f"Added stock: {symbol} (Token: {token})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding stock {stock_data.get('symbol')}: {e}")
+        return False
+
+def add_option_from_csv_data(option_data):
+    """
+    Add an option to the tracking system from CSV data
+    
+    Args:
+        option_data (dict): Option data from CSV
+        
+    Returns:
+        bool: Success or failure
+    """
+    try:
+        symbol = option_data.get('symbol')
+        token = option_data.get('token')
+        name = option_data.get('name')
+        exchange = option_data.get('exch_seg', 'NFO')
+        strike = option_data.get('strike')
+        expiry = option_data.get('expiry')
+        
+        if not symbol or not token or not strike or not expiry:
+            logger.warning(f"Missing required data for option: {option_data}")
+            return False
+        
+        # Determine option type (CE/PE) from symbol
+        option_type = "CE" if symbol.endswith("CE") else "PE" if symbol.endswith("PE") else None
+        
+        if not option_type:
+            logger.warning(f"Cannot determine option type for {symbol}")
+            return False
+            
+        # Determine parent symbol (underlying stock)
+        parent_symbol = name  # Assuming 'name' contains the parent symbol like 'NIFTY' or 'RELIANCE'
+        
+        # Create a unique key for this option
+        option_key = f"{parent_symbol}_{expiry}_{strike}_{option_type}"
+        
+        # Add option to options_data
+        options_data[option_key] = {
+            "symbol": symbol,
+            "token": token,
+            "exchange": exchange,
+            "ltp": None,
+            "high": None,
+            "low": None,
+            "open": None,
+            "previous": None,
+            "change_percent": 0,
+            "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open_interest', 
+                                                   'change', 'open', 'high', 'low']),
+            "signal": 0,
+            "strength": 0,
+            "trend": "NEUTRAL",
+            "strike": strike,
+            "expiry": expiry,
+            "parent_symbol": parent_symbol,
+            "option_type": option_type,
+            "last_updated": None,
+            "data_source": "broker"
+        }
+        
+        # Add this option to the parent stock's options list
+        if parent_symbol in stocks_data:
+            if option_type in stocks_data[parent_symbol]["options"]:
+                stocks_data[parent_symbol]["options"][option_type].append(option_key)
+            
+            # Set as primary option if none exists yet
+            if option_type == "CE" and not stocks_data[parent_symbol]["primary_ce"]:
+                stocks_data[parent_symbol]["primary_ce"] = option_key
+            elif option_type == "PE" and not stocks_data[parent_symbol]["primary_pe"]:
+                stocks_data[parent_symbol]["primary_pe"] = option_key
+        
+        logger.info(f"Added option: {symbol} (Token: {token}, Parent: {parent_symbol}, Strike: {strike}, Type: {option_type})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding option {option_data.get('symbol')}: {e}")
+        return False
+
+def initialize_from_csv():
+    """Initialize stocks and options from CSV file"""
+    csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
+    
+    stocks_list, options_list = load_symbols_from_csv(csv_path)
+    
+    # Add stocks first
+    for stock_data in stocks_list:
+        add_stock_from_csv_data(stock_data)
+    
+    # Add options after stocks
+    for option_data in options_list:
+        add_option_from_csv_data(option_data)
+    
+    logger.info(f"Initialization complete: {len(stocks_data)} stocks and {len(options_data)} options loaded")
+
+# Call initialization function
+initialize_from_csv()
 # ============ Trading State Class ============
 class TradingState:
     def __init__(self):
@@ -1195,7 +1394,8 @@ def find_stock_token_in_json(symbol):
     global script_master_data
     
     # Make sure script master is loaded
-    if not script_master_loaded and not load_script_master():
+    # Removed old script master loading logic
+    tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
         logger.error("Cannot search for stock token: Script master data not loaded")
         return None
     
@@ -2003,11 +2203,9 @@ def update_all_options():
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
 
 
-# Global variables for script master data
-SCRIPT_MASTER_PATH = r"C:\Users\madhu\Pictures\ubuntu\OpenAPIScripMaster.json"
-script_master_data = None
-script_master_loaded = False
-option_token_cache = {}
+# Removed script master global variables
+CSV_PATH = r"C:\Users\madhu\Pictures\ubuntu\tokens_and_symbols.csv"
+tokens_and_symbols_df = None
 
 # ============ Script Master Data Management ============
 def load_script_master():
@@ -2046,11 +2244,7 @@ def load_script_master():
         script_master_data = {}
         return False
 
-# Script master index for faster lookups
-script_master_index = {
-    'by_symbol': {},
-    'by_token': {}
-}
+# Removed script master index and related logic
 # Script master index for faster lookups
 script_master_index = {
     'by_symbol': {},
@@ -2675,9 +2869,7 @@ def clear_option_token_cache(older_than=None):
     
     logger.info(f"Cleared {len(entries_to_remove)} old entries from option token cache")
 
-# Add this function to build proper option symbols and tokens
-# Add a cache for option tokens to avoid redundant lookups
-def update_symbol_token(symbol, new_token=None, new_symbol=None):
+# Removed old token and symbol fetching logic
     """
     Update symbol and token information comprehensively
     
