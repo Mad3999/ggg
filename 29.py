@@ -34,19 +34,18 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ============ Logging Setup ============
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.StreamHandler(),
+        logging.StreamHandler(sys.stdout),
         logging.FileHandler(f"logs/trading_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", 
                           mode='a', encoding='utf-8')
     ]
 )
 logger = logging.getLogger("trading_dashboard")
 
-# Create logs directory if it doesn't exist
-os.makedirs("logs", exist_ok=True)
 # ============ Rate Limiting and Retry Logic ============
 class RateLimitHandler:
     def __init__(self, max_requests=1, time_window=1, initial_backoff=1, max_backoff=60):
@@ -284,6 +283,10 @@ NEWS_SENTIMENT_THRESHOLD = 0.25  # Threshold for considering news as positive/ne
 NEWS_CONFIDENCE_THRESHOLD = 0.65  # Minimum confidence to trade on news (reduced from 0.7)
 NEWS_MAX_AGE = 1800  # Max age of news in seconds (30 minutes) to consider for trading (reduced from 1 hour)
 
+# Historical Data Paths
+NIFTY_HISTORY_PATH = r"C:\Users\madhu\Pictures\ubuntu\NIFTY.csv"
+BANK_HISTORY_PATH = r"C:\Users\madhu\Pictures\ubuntu\BANK.csv"
+
 # Symbol mapping for broker
 SYMBOL_MAPPING = {
     "NIFTY": "NIFTY 50",
@@ -307,6 +310,21 @@ last_pcr_update = datetime.now() - timedelta(seconds=PCR_UPDATE_INTERVAL)
 last_news_update = datetime.now() - timedelta(seconds=NEWS_CHECK_INTERVAL)
 last_cleanup = datetime.now()
 last_connection_time = None
+
+# Add value store for smoother UI transitions
+value_store = {
+    'stocks': {},
+    'options': {},
+    'trades': {},
+    'sentiment': {},
+    'performance': {
+        'total_pnl': 0,
+        'daily_pnl': 0,
+        'win_rate': 0,
+        'trades_today': 0
+    },
+    'last_values': {}  # Store previous values for comparison
+}
 
 # Default stocks to show if no stocks are manually added
 DEFAULT_STOCKS = [
@@ -356,204 +374,6 @@ ui_data_store = {
     'predicted_strategies': {},  # Added for strategy predictions
     'news': {}  # Added for news data
 }
-
-def load_symbols_from_csv(csv_path):
-    """
-    Load stock and option symbols from CSV file
-    
-    Args:
-        csv_path (str): Path to the CSV file
-    
-    Returns:
-        tuple: Lists of stock and option data
-    """
-    try:
-        logger.info(f"Loading symbols from {csv_path}")
-        df = pd.read_csv(csv_path)
-        
-        # Check if required columns exist
-        required_columns = ['token', 'symbol', 'name', 'expiry', 'strike', 'exch_seg']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        if missing_columns:
-            logger.error(f"Missing required columns in CSV: {missing_columns}")
-            return [], []
-        
-        # Process stocks (NSE segment)
-        stocks = df[df['exch_seg'] == 'NSE'].copy()
-        
-        # Process options (NFO segment)
-        options = df[df['exch_seg'] == 'NFO'].copy()
-        
-        # Convert to list of dictionaries for easier processing
-        stocks_list = stocks.to_dict('records')
-        options_list = options.to_dict('records')
-        
-        logger.info(f"Loaded {len(stocks_list)} stocks and {len(options_list)} options from CSV")
-        return stocks_list, options_list
-    
-    except Exception as e:
-        logger.error(f"Error loading symbols from CSV: {e}", exc_info=True)
-        return [], []
-
-def add_stock_from_csv_data(stock_data):
-    """
-    Add a stock to the tracking system from CSV data
-    
-    Args:
-        stock_data (dict): Stock data from CSV
-        
-    Returns:
-        bool: Success or failure
-    """
-    try:
-        symbol = stock_data.get('symbol')
-        token = stock_data.get('token')
-        name = stock_data.get('name')
-        exchange = stock_data.get('exch_seg', 'NSE')
-        
-        if not symbol or not token:
-            logger.warning(f"Missing required data for stock: {stock_data}")
-            return False
-        
-        # Create stock entry in the global dictionary
-        stocks_data[symbol] = {
-            "token": token,
-            "exchange": exchange,
-            "symbol": symbol,
-            "name": name,
-            "type": "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK",
-            "ltp": None,
-            "previous": None,
-            "high": None,
-            "low": None,
-            "open": None,
-            "change_percent": 0,
-            "movement_pct": 0,
-            "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open', 'high', 'low']),
-            "support_levels": [],
-            "resistance_levels": [],
-            "last_sr_update": None,
-            "strategy_enabled": {
-                "SCALP": True,
-                "SWING": True,
-                "MOMENTUM": True,
-                "NEWS": True
-            },
-            "options": {
-                "CE": [],
-                "PE": []
-            },
-            "primary_ce": None,
-            "primary_pe": None,
-            "last_updated": None,
-            "data_source": "broker",
-            "predicted_strategy": None,
-            "strategy_confidence": 0,
-        }
-        
-        logger.info(f"Added stock: {symbol} (Token: {token})")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error adding stock {stock_data.get('symbol')}: {e}")
-        return False
-
-def add_option_from_csv_data(option_data):
-    """
-    Add an option to the tracking system from CSV data
-    
-    Args:
-        option_data (dict): Option data from CSV
-        
-    Returns:
-        bool: Success or failure
-    """
-    try:
-        symbol = option_data.get('symbol')
-        token = option_data.get('token')
-        name = option_data.get('name')
-        exchange = option_data.get('exch_seg', 'NFO')
-        strike = option_data.get('strike')
-        expiry = option_data.get('expiry')
-        
-        if not symbol or not token or not strike or not expiry:
-            logger.warning(f"Missing required data for option: {option_data}")
-            return False
-        
-        # Determine option type (CE/PE) from symbol
-        option_type = "CE" if symbol.endswith("CE") else "PE" if symbol.endswith("PE") else None
-        
-        if not option_type:
-            logger.warning(f"Cannot determine option type for {symbol}")
-            return False
-            
-        # Determine parent symbol (underlying stock)
-        parent_symbol = name  # Assuming 'name' contains the parent symbol like 'NIFTY' or 'RELIANCE'
-        
-        # Create a unique key for this option
-        option_key = f"{parent_symbol}_{expiry}_{strike}_{option_type}"
-        
-        # Add option to options_data
-        options_data[option_key] = {
-            "symbol": symbol,
-            "token": token,
-            "exchange": exchange,
-            "ltp": None,
-            "high": None,
-            "low": None,
-            "open": None,
-            "previous": None,
-            "change_percent": 0,
-            "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open_interest', 
-                                                   'change', 'open', 'high', 'low']),
-            "signal": 0,
-            "strength": 0,
-            "trend": "NEUTRAL",
-            "strike": strike,
-            "expiry": expiry,
-            "parent_symbol": parent_symbol,
-            "option_type": option_type,
-            "last_updated": None,
-            "data_source": "broker"
-        }
-        
-        # Add this option to the parent stock's options list
-        if parent_symbol in stocks_data:
-            if option_type in stocks_data[parent_symbol]["options"]:
-                stocks_data[parent_symbol]["options"][option_type].append(option_key)
-            
-            # Set as primary option if none exists yet
-            if option_type == "CE" and not stocks_data[parent_symbol]["primary_ce"]:
-                stocks_data[parent_symbol]["primary_ce"] = option_key
-            elif option_type == "PE" and not stocks_data[parent_symbol]["primary_pe"]:
-                stocks_data[parent_symbol]["primary_pe"] = option_key
-        
-        logger.info(f"Added option: {symbol} (Token: {token}, Parent: {parent_symbol}, Strike: {strike}, Type: {option_type})")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error adding option {option_data.get('symbol')}: {e}")
-        return False
-
-def initialize_from_csv():
-    """Initialize stocks and options from CSV file"""
-    csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
-    
-    stocks_list, options_list = load_symbols_from_csv(csv_path)
-    
-    # Add stocks first
-    for stock_data in stocks_list:
-        add_stock_from_csv_data(stock_data)
-    
-    # Add options after stocks
-    for option_data in options_list:
-        add_option_from_csv_data(option_data)
-    
-    logger.info(f"Initialization complete: {len(stocks_data)} stocks and {len(options_data)} options loaded")
-
-# Call initialization function
-initialize_from_csv()
 # ============ Trading State Class ============
 class TradingState:
     def __init__(self):
@@ -1381,39 +1201,6 @@ def load_historical_data(symbol, period="3mo", force_refresh=False):
         logger.error(f"Error loading historical data for {symbol}: {e}", exc_info=True)
         return False
 
-def find_stock_token_in_json(symbol):
-    """
-    Find stock token in the script master data with exact symbol matching
-    
-    Args:
-        symbol (str): Stock symbol to search for
-        
-    Returns:
-        str: Token if found, None otherwise
-    """
-    global script_master_data
-    
-    # Make sure script master is loaded
-    # Removed old script master loading logic
-    tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
-        logger.error("Cannot search for stock token: Script master data not loaded")
-        return None
-    
-    # Standardize symbol name to uppercase
-    symbol = symbol.upper()
-    
-    # First look for exact matches in the symbol field
-    for entry in script_master_data:
-        trading_symbol = entry.get("symbol", "").upper()
-        name = entry.get("name", "").upper()
-        
-        # Only match exact symbols - not partial matches
-        if symbol == trading_symbol or symbol == name:
-            return entry.get("token")
-    
-    # If no exact match found, log a warning
-    logger.warning(f"No exact matching token found in script master for stock {symbol}")
-    return None
 
 def add_stock(symbol, token=None, exchange="NSE", stock_type="STOCK", with_options=True):
     """Add a new stock to track with improved token matching"""
@@ -1509,6 +1296,10 @@ def add_stock(symbol, token=None, exchange="NSE", stock_type="STOCK", with_optio
     last_data_update["stocks"][symbol] = None
     
     logger.info(f"Added new stock: {symbol} ({token}) on {exchange}")
+    
+    # For NIFTY and BANKNIFTY, load historical data from CSV files
+    if symbol in ["NIFTY", "BANKNIFTY"]:
+        load_historical_data(symbol)
     
     # Immediately fetch price data for the new stock
     if broker_connected:
@@ -2203,1212 +1994,275 @@ def update_all_options():
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
 
 
-# Removed script master global variables
-CSV_PATH = r"C:\Users\madhu\Pictures\ubuntu\tokens_and_symbols.csv"
-tokens_and_symbols_df = None
+
 
 # ============ Script Master Data Management ============
-def load_script_master():
-    """Load the script master data from the local JSON file with advanced error handling"""
-    global script_master_data, script_master_loaded
-    
-    if script_master_loaded and script_master_data:
-        logger.info("Using already loaded script master data")
-        return True
-        
+def load_tokens_and_symbols_from_csv():
+    """Load token and symbol mapping from CSV file"""
+    global tokens_and_symbols_df
     try:
-        logger.info(f"Loading script master data from {SCRIPT_MASTER_PATH}")
-        with open(SCRIPT_MASTER_PATH, 'r') as f:
-            script_master_data = json.load(f)
-        
-        if not script_master_data:
-            logger.error("Script master data is empty")
-            return False
-            
-        script_master_loaded = True
-        logger.info(f"Successfully loaded script master data with {len(script_master_data)} entries")
-        
-        # Preprocess script master data for faster searches
-        preprocess_script_master()
-        return True
-    except FileNotFoundError:
-        logger.error(f"Script master file not found at {SCRIPT_MASTER_PATH}")
-        script_master_data = {}
-        return False
-    except json.JSONDecodeError:
-        logger.error(f"Invalid JSON in script master file")
-        script_master_data = {}
-        return False
+        csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
+        logger.info(f"Loading tokens and symbols from {csv_path}")
+        tokens_and_symbols_df = pd.read_csv(csv_path)
+        logger.info(f"Successfully loaded {len(tokens_and_symbols_df)} rows from CSV")
+        return tokens_and_symbols_df
     except Exception as e:
-        logger.error(f"Failed to load script master data: {e}")
-        script_master_data = {}
-        return False
+        logger.error(f"Error loading tokens and symbols from CSV: {e}", exc_info=True)
+        return pd.DataFrame()  # Return empty DataFrame on error
 
-# Removed script master index and related logic
-# Script master index for faster lookups
-script_master_index = {
-    'by_symbol': {},
-    'by_token': {}
-}
-# Script master index for faster lookups
-script_master_index = {
-    'by_symbol': {},
-    'by_token': {}
-}
-
-def preprocess_script_master():
-    """Preprocess script master data to create indices for faster lookups"""
-    global script_master_data, script_master_index
-    
-    if not script_master_data:
-        return
-    
-    logger.info("Preprocessing script master data for efficient lookups...")
-    
-    # Clear existing indices
-    script_master_index = {
-        'by_symbol': {},
-        'by_token': {}
-    }
-    
-    # Create indices
-    for entry in script_master_data:
-        symbol = entry.get('symbol', '').upper()
-        name = entry.get('name', '').upper()
-        token = entry.get('token')
-        
-        if symbol:
-            if symbol not in script_master_index['by_symbol']:
-                script_master_index['by_symbol'][symbol] = []
-            script_master_index['by_symbol'][symbol].append(entry)
-            
-        if name:
-            if name not in script_master_index['by_symbol']:
-                script_master_index['by_symbol'][name] = []
-            script_master_index['by_symbol'][name].append(entry)
-            
-        if token:
-            script_master_index['by_token'][token] = entry
-    
-    logger.info(f"Preprocessing complete. Created indices for {len(script_master_index['by_symbol'])} symbols and {len(script_master_index['by_token'])} tokens")
-
-def get_next_expiry_date(symbol=None):
+def search_stock_in_csv(symbol):
     """
-    Get the next expiry date for options with improved logic.
+    Search for a stock in the CSV file by symbol
     
     Args:
-        symbol (str, optional): Symbol for which to get expiry date. Defaults to None.
+        symbol (str): Stock symbol to search for
         
     Returns:
-        str: Expiry date in format "DDMMMYY" (e.g., "27MAR25")
+        dict: Stock data if found, None otherwise
     """
     try:
-        # If broker is connected, try to get real expiry dates from the broker API
-        if broker_connected and smart_api is not None:
-            try:
-                # Convert symbol if necessary
-                api_symbol = SYMBOL_MAPPING.get(symbol, symbol) if symbol else "NIFTY"
-                
-                # Using hardcoded value for now, this would be an API call in production
-                logger.info(f"Using predefined expiry date for {api_symbol} (would fetch from API in production)")
-                
-                # For testing hardcoding to 27MAR25
-                return "24APR25"
-                
-            except Exception as e:
-                logger.warning(f"Error fetching expiry date from broker API: {e}")
-                # Fall through to default handling
+        global tokens_and_symbols_df
         
-        # Symbol-specific default expiry dates if API fails or broker not connected
-        if symbol == "NIFTY" :
-            default_expiry = "03APR25"
-        else:
-            default_expiry = "24APR25"  # Monthly expiry for stocks
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
         
-        logger.info(f"Using default expiry date for {symbol}: {default_expiry}")
-        return default_expiry
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return None
         
-    except Exception as e:
-        # Log any errors and fall back to a safe default
-        logger.error(f"Error determining expiry date for {symbol}: {e}")
-        default_expiry = "24APR25"  # Hardcoded safe default
-        logger.info(f"Using safe default expiry date: {default_expiry}")
-        return default_expiry
-
-def build_option_symbol(index_name, expiry_date, strike, option_type):
-    """
-    Build option symbol in the exact format expected by the broker
-    
-    Args:
-        index_name (str): Index/Stock name (e.g., NIFTY, BANKNIFTY)
-        expiry_date (str): Expiry date in format "DDMMMYY" (e.g., "27MAR25")
-        strike (float/int): Strike price
-        option_type (str): Option type (CE/PE)
+        # Filter to NSE segment only
+        stocks = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NSE'].copy()
         
-    Returns:
-        str: Formatted option symbol
-    """
-    # Standardize inputs
-    index_name = index_name.upper()
-    expiry_date = expiry_date.upper()
-    option_type = option_type.upper()
-    
-    # Ensure strike is an integer with no decimal
-    strike = int(float(strike))
-    
-    # Build the symbol in the exact format expected by Angel Broking
-    # Format: SYMBOLDDMMMYYSTRIKECE/PE (e.g., NIFTY27MAR2519000CE)
-    symbol = f"{index_name}{expiry_date}{strike}{option_type}"
-    
-    logger.debug(f"Built option symbol: {symbol}")
-    return symbol
-
-def generate_option_symbol_variations(symbol, expiry_date, strike, option_type):
-    """
-    Generate various formats of the option symbol to increase search match chances
-    
-    Args:
-        symbol (str): Index/Stock name
-        expiry_date (str): Expiry date in format "DDMMMYY"
-        strike (str/int): Strike price
-        option_type (str): Option type (CE/PE)
+        # Search for exact symbol match (case insensitive)
+        symbol = symbol.upper()
+        matches = stocks[stocks['symbol'].str.upper() == symbol]
         
-    Returns:
-        list: List of possible symbol formats
-    """
-    symbol = symbol.upper()
-    expiry_date = expiry_date.upper()
-    option_type = option_type.upper()
-    strike = str(int(float(strike)))
-    
-    variations = [
-        f"{symbol}{expiry_date}{strike}{option_type}",  # NIFTY27MAR2519000CE
-        f"{symbol} {strike} {option_type}",             # NIFTY 19000 CE
-        f"{symbol}{strike}{option_type}",               # NIFTY19000CE
-        f"{symbol}-{strike}-{option_type}",             # NIFTY-19000-CE
-        f"{symbol} {expiry_date} {strike} {option_type}", # NIFTY 27MAR25 19000 CE
-    ]
-    
-    # Add variations with different expiry date formats
-    # Try to convert expiry from DDMMMYY to DD-MMM-YYYY format if possible
-    try:
-        expiry_obj = datetime.strptime(expiry_date, "%d%b%y")
-        alt_expiry1 = expiry_obj.strftime("%d-%b-%Y").upper()
-        alt_expiry2 = expiry_obj.strftime("%d%b%Y").upper()
+        if not matches.empty:
+            logger.info(f"Found stock {symbol} in CSV")
+            # Convert to dictionary for easier handling
+            return matches.iloc[0].to_dict()
         
-        variations.extend([
-            f"{symbol}{alt_expiry1}{strike}{option_type}",
-            f"{symbol}{alt_expiry2}{strike}{option_type}",
-        ])
-    except:
-        # If date conversion fails, proceed with the base variations
-        pass
-    
-    return variations
-
-def find_option_token_in_json(symbol, strike, option_type, expiry_date=None):
-    """
-    Find option token in the local JSON file with exact symbol matching
-    
-    Args:
-        symbol (str): Stock/index symbol (e.g., NIFTY, BANKNIFTY)
-        strike (int/float): Strike price
-        option_type (str): Option type (CE/PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
+        # If not found by symbol, try searching by name
+        matches = stocks[stocks['name'].str.upper() == symbol]
         
-    Returns:
-        dict: Option information with token if found, None otherwise
-    """
-    global script_master_data
-    
-    # Make sure script master is loaded
-    if not script_master_loaded and not load_script_master():
-        logger.error("Cannot search for option token: Script master data not loaded")
+        if not matches.empty:
+            logger.info(f"Found stock {symbol} by name in CSV")
+            return matches.iloc[0].to_dict()
+            
+        logger.warning(f"Stock {symbol} not found in CSV")
         return None
-    
-    # Get expiry date if not provided
-    if expiry_date is None or expiry_date == '24APR25':
-        expiry_date = get_next_expiry_date()
-    
-    # Format parameters correctly
-    symbol = symbol.upper()
-    option_type = option_type.upper()
-    
-    # Format strike correctly without decimals
-    if isinstance(strike, float):
-        strike = int(strike)
-    strike = str(strike)
-    
-    # Create the exact symbol format we expect to find
-    exact_symbol = f"{symbol}{expiry_date}{strike}{option_type}"
-    
-    # Search through the script master data for an exact match
-    for entry in script_master_data:
-        # Check the trading symbol or name field for exact match
-        trading_symbol = entry.get("symbol", "").upper()
-        name = entry.get("name", "").upper()
         
-        # Look for exact match with the symbol we constructed
-        if exact_symbol == trading_symbol or exact_symbol == name:
-            return {
-                "token": entry.get("token"),
-                "symbol": trading_symbol,
-                "strike": strike,
-                "expiry": expiry_date
-            }
-    
-    # If we couldn't find an exact match, log a warning
-    logger.warning(f"No exact matching token found in script master for {exact_symbol}")
-    return None
+    except Exception as e:
+        logger.error(f"Error searching for stock in CSV: {e}", exc_info=True)
+        return None
 
-def get_option_token_from_cache_or_search(symbol, strike, option_type, expiry_date=None):
+def find_atm_options_in_csv(symbol, current_price):
     """
-    Get option token from cache if available, otherwise search for it
-    with enhanced caching and error handling
-    
-    Args:
-        symbol (str): Stock/index symbol (e.g., NIFTY, BANKNIFTY)
-        strike (int/float): Strike price
-        option_type (str): Option type (CE/PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
-        
-    Returns:
-        dict: Option information with token
-    """
-    global option_token_cache
-    
-    # Get expiry date if not provided
-    if not expiry_date or expiry_date == '24APR25':
-        expiry_date = get_next_expiry_date(symbol)
-    
-    # Standardize parameters
-    symbol = symbol.upper()
-    option_type = option_type.upper()
-    strike_int = int(float(strike))
-    
-    # Create the exact symbol format
-    option_symbol = build_option_symbol(symbol, expiry_date, strike_int, option_type)
-    
-    # Check if we have this in our cache
-    cache_key = f"{symbol}_{expiry_date}_{strike_int}_{option_type}"
-    if cache_key in option_token_cache:
-        cache_entry = option_token_cache[cache_key]
-        cache_age = datetime.now() - cache_entry.get("timestamp", datetime.min)
-        
-        # Use cache if it's not too old (less than 24 hours)
-        if cache_age.total_seconds() < 86400:
-            logger.info(f"Using cached token for {option_symbol}: {cache_entry.get('token')}")
-            return cache_entry
-        else:
-            logger.info(f"Cache entry for {option_symbol} is stale, refreshing")
-    
-    # If not in cache or cache is stale, search for it in script master first
-    option_info = find_option_token_in_json(symbol, strike_int, option_type, expiry_date)
-    
-    # If found in script master, cache it and return
-    if option_info and option_info.get("token"):
-        # Add timestamp to cache entry
-        option_info["timestamp"] = datetime.now()
-        option_token_cache[cache_key] = option_info
-        logger.info(f"Cached token from script master for {option_symbol}: {option_info.get('token')}")
-        return option_info
-    
-    # If not found in script master and we're connected to broker, search directly
-    if broker_connected and smart_api is not None:
-        try:
-            logger.info(f"Searching for option token via broker API: {option_symbol}")
-            
-            # Generate variation for more thorough search
-            search_variations = [option_symbol]
-            
-            # Add a common variation with spaces
-            if len(symbol) <= 8:  # Only for shorter symbols to avoid false matches
-                parts = re.match(r"([A-Z]+)(\d+[A-Z]{3}\d+)(\d+)([CPE]{2})", option_symbol)
-                if parts:
-                    sym, exp, strk, opt = parts.groups()
-                    search_variations.append(f"{sym} {strk} {opt}")
-            
-            # Try each variation
-            for search_text in search_variations:
-                matches = search_symbols(search_text)
-                
-                # Process matches with detailed logging
-                if matches:
-                    logger.info(f"Found {len(matches)} potential matches for {search_text}")
-                    
-                    # Look for exact match first
-                    exact_matches = []
-                    for match in matches:
-                        match_name = match.get("name", "").upper()
-                        match_symbol = match.get("symbol", "").upper()
-                        
-                        logger.debug(f"Evaluating match: {match_name} / {match_symbol}")
-                        
-                        # Check for exact symbol match
-                        if match_name == option_symbol or match_symbol == option_symbol:
-                            exact_matches.append(match)
-                    
-                    # If we have exact matches, use the first one
-                    if exact_matches:
-                        best_match = exact_matches[0]
-                        result = {
-                            "token": best_match.get("token"),
-                            "symbol": best_match.get("symbol", option_symbol),
-                            "strike": strike_int,
-                            "expiry": expiry_date,
-                            "timestamp": datetime.now()
-                        }
-                        
-                        # Cache the result
-                        option_token_cache[cache_key] = result
-                        logger.info(f"Found and cached exact match token for {option_symbol}: {result['token']}")
-                        return result
-                    
-                    # No exact match, try partial matching with scoring
-                    best_match = None
-                    best_score = 0
-                    
-                    for match in matches:
-                        match_name = match.get("name", "").upper()
-                        match_symbol = match.get("symbol", "").upper()
-                        
-                        score = 0
-                        
-                        # Check if all key components are present
-                        if symbol in match_name or symbol in match_symbol:
-                            score += 10
-                        
-                        if str(strike_int) in match_name or str(strike_int) in match_symbol:
-                            score += 10
-                            
-                        if option_type in match_name or option_type in match_symbol:
-                            score += 10
-                            
-                        # Check for expiry components
-                        if expiry_date in match_name or expiry_date in match_symbol:
-                            score += 20
-                        else:
-                            # Check for month part
-                            month_part = expiry_date[2:5]  # e.g., "MAR" from "27MAR25"
-                            if month_part in match_name or month_part in match_symbol:
-                                score += 10
-                        
-                        if score > best_score:
-                            best_score = score
-                            best_match = match
-                    
-                    # If we have a good match (score of 30 or higher)
-                    if best_match and best_score >= 30:
-                        result = {
-                            "token": best_match.get("token"),
-                            "symbol": best_match.get("symbol", option_symbol),
-                            "strike": strike_int,
-                            "expiry": expiry_date,
-                            "timestamp": datetime.now()
-                        }
-                        
-                        # Cache the result
-                        option_token_cache[cache_key] = result
-                        logger.info(f"Found and cached partial match token for {option_symbol} (score {best_score}): {result['token']}")
-                        return result
-        
-        except Exception as e:
-            logger.error(f"Error searching for option token via API: {e}")
-    
-    # If all searches fail, generate a consistent fallback token
-    dummy_token = str(abs(hash(option_symbol)) % 100000)
-    logger.warning(f"Could not find token for {option_symbol}, using fallback token: {dummy_token}")
-    
-    result = {
-        "token": dummy_token,
-        "symbol": option_symbol,
-        "strike": strike_int,
-        "expiry": expiry_date,
-        "timestamp": datetime.now(),
-        "is_fallback": True  # Flag to indicate this is a fallback token
-    }
-    
-    # Cache fallback tokens too, but with a shorter expiry (1 hour)
-    option_token_cache[cache_key] = result
-    return result
-
-def calculate_rounded_strike(current_price):
-    """
-    Calculate rounded strike price based on price magnitude:
-    - Under 100: Round to nearest 5
-    - 100-1000: Round to nearest 10
-    - 1000-10000: Round to nearest 50
-    - 10000-100000: Round to nearest 100
-    - Above 100000: Round to nearest 100
-    
-    Maximum rounding adjustment is capped at 100 points
-    
-    Args:
-        current_price (float): Current price of the security
-        
-    Returns:
-        float: Rounded strike price
-    """
-    if current_price < 100:
-        # Under 100: Round to nearest 5
-        rounded_strike = round(current_price / 5) * 5
-    elif current_price < 1000:
-        # 100-1000: Round to nearest 10
-        rounded_strike = round(current_price / 10) * 10
-    elif current_price < 10000:
-        # 1000-10000: Round to nearest 50
-        rounded_strike = round(current_price / 50) * 50
-    elif current_price < 100000:
-        # 10000-100000: Round to nearest 100
-        rounded_strike = round(current_price / 100) * 100
-    else:
-        # Above 100000: Round to nearest 100
-        rounded_strike = round(current_price / 100) * 100
-    
-    # Calculate difference between rounded and original price
-    diff = abs(rounded_strike - current_price)
-    
-    # If difference exceeds maximum of 100 points, cap it
-    if diff > 100:
-        # Move toward original price to limit difference to 100
-        if rounded_strike > current_price:
-            rounded_strike = current_price + 100
-        else:
-            rounded_strike = current_price - 100
-        
-        # Re-round to appropriate interval based on magnitude
-        if current_price < 100:
-            rounded_strike = round(rounded_strike / 5) * 5
-        elif current_price < 1000:
-            rounded_strike = round(rounded_strike / 5) * 5
-        elif current_price < 10000:
-            rounded_strike = round(rounded_strike / 10) * 10
-        else:
-            rounded_strike = round(rounded_strike / 100) * 100
-    
-    return rounded_strike
-
-def get_option_token(symbol, current_price=None, option_type="CE", expiry_date=None):
-    """
-    Get option token with appropriate strike price rounding based on price magnitude
+    Find ATM (At The Money) options in the CSV file based on stock symbol and price
     
     Args:
         symbol (str): Stock/index symbol
-        current_price (float, optional): Current price for ATM options
-        option_type (str, optional): Option type (CE/PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
+        current_price (float): Current price of the stock/index
         
     Returns:
-        dict: Option information with token or None if failed
+        dict: Dictionary with CE and PE options
     """
-    # Get current price if not provided
-    if current_price is None and symbol in stocks_data:
-        current_price = stocks_data[symbol].get("ltp")
-    
-    if current_price is None:
-        logger.error(f"Cannot get option token: No price available for {symbol}")
-        return None
-    
-    # Get expiry date if not provided
-    if not expiry_date:
-        expiry_date = get_next_expiry_date(symbol)
-    
-    # Calculate rounded strike appropriate for the current price
-    rounded_strike = calculate_rounded_strike(current_price)
-    
-    logger.info(f"Getting option token for {symbol} {rounded_strike} {option_type} {expiry_date}")
-    
-    # Get token using our enhanced function with caching
-    option_info = get_option_token_from_cache_or_search(symbol, rounded_strike, option_type, expiry_date)
-    
-    if option_info and option_info.get("is_fallback"):
-        logger.warning(f"Using fallback token for {symbol} {rounded_strike} {option_type}")
-    
-    return option_info
-
-def search_and_validate_option_token(symbol, strike, option_type, expiry_date=None):
-    """
-    Comprehensive search and validation of option token with multiple fallbacks
-    
-    Args:
-        symbol (str): Stock/index symbol (e.g., NIFTY, BANKNIFTY)
-        strike (int/float): Strike price
-        option_type (str): Option type (CE/PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
+    try:
+        global tokens_and_symbols_df
         
-    Returns:
-        dict: Validated option information with token or None if failed
-    """
-    if not symbol or not strike or not option_type:
-        logger.error("Missing required parameters for option token search")
-        return None
-    
-    # Standardize inputs
-    symbol = symbol.upper()
-    option_type = option_type.upper()
-    strike_int = int(float(strike))
-    
-    # Get expiry date if not provided
-    if not expiry_date or expiry_date == '24APR25':
-        expiry_date = get_next_expiry_date(symbol)
-    
-    logger.info(f"Searching for token: {symbol} {strike_int} {option_type} {expiry_date}")
-    
-    # First try: Get from cache or script master
-    option_info = get_option_token_from_cache_or_search(symbol, strike_int, option_type, expiry_date)
-    
-    # If we got a result and it's not a fallback, verify it with a test API call
-    if option_info and not option_info.get("is_fallback") and broker_connected and smart_api:
-        token = option_info.get("token")
-        option_symbol = option_info.get("symbol")
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
         
-        try:
-            # Try to get a test quote to validate the token
-            logger.info(f"Validating token {token} for {option_symbol}")
-            test_quote = smart_api.ltpData("NFO", option_symbol, token)
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return {"CE": None, "PE": None}
+        
+        # Filter to NFO segment only
+        options = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NFO'].copy()
+        
+        # Filter by the underlying stock/index name
+        symbol = symbol.upper()
+        filtered_options = options[options['name'].str.upper() == symbol]
+        
+        if filtered_options.empty:
+            logger.warning(f"No options found for {symbol}")
+            return {"CE": None, "PE": None}
+        
+        # Calculate the appropriate strike price interval based on price
+        if current_price < 100:
+            strike_interval = 5
+        elif current_price < 1000:
+            strike_interval = 10
+        elif current_price < 10000:
+            strike_interval = 50
+        else:
+            strike_interval = 100
             
-            if isinstance(test_quote, dict) and test_quote.get("status"):
-                logger.info(f"Token validation successful for {option_symbol}")
-                return option_info
-            else:
-                logger.warning(f"Token validation failed for {option_symbol}: {test_quote}")
-                # Continue to next fallback
-        except Exception as e:
-            logger.warning(f"Error during token validation: {e}")
-            # Continue to next fallback
-    
-    # Second try: Search for symbol variations
-    if broker_connected and smart_api:
-        # Prepare the option symbol in all possible formats
-        option_symbol = build_option_symbol(symbol, expiry_date, strike_int, option_type)
-        variation1 = f"{symbol}{strike_int}{option_type}"  # NIFTY19000CE
-        variation2 = f"{symbol} {strike_int} {option_type}"  # NIFTY 19000 CE
+        # Round to nearest appropriate interval
+        atm_strike = round(current_price / strike_interval) * strike_interval
+        logger.info(f"Calculated ATM strike price: {atm_strike}")
         
-        for search_text in [option_symbol, variation1, variation2]:
-            try:
-                logger.info(f"Searching broker API for: {search_text}")
-                matches = search_symbols(search_text)
-                
-                if matches:
-                    # Find the best match
-                    for match in matches:
-                        match_name = match.get("name", "").upper()
-                        match_symbol = match.get("symbol", "").upper()
-                        match_token = match.get("token")
-                        
-                        # Check if this is a good match
-                        if (symbol in match_name or symbol in match_symbol) and \
-                           (str(strike_int) in match_name or str(strike_int) in match_symbol) and \
-                           (option_type in match_name or option_type in match_symbol):
-                            
-                            logger.info(f"Found match via broker search: {match_name} with token {match_token}")
-                            
-                            # Create and return the option info
-                            found_info = {
-                                "token": match_token,
-                                "symbol": match_symbol or match_name,
-                                "strike": strike_int,
-                                "expiry": expiry_date,
-                                "timestamp": datetime.now()
-                            }
-                            
-                            # Cache this result
-                            cache_key = f"{symbol}_{expiry_date}_{strike_int}_{option_type}"
-                            option_token_cache[cache_key] = found_info
-                            
-                            return found_info
-            except Exception as e:
-                logger.warning(f"Error searching for {search_text}: {e}")
-    
-    # If all else fails, return the original result (which might be a fallback)
-    if option_info:
-        return option_info
-    
-    # Last resort: generate a fallback token
-    logger.warning(f"All token search methods failed for {symbol} {strike_int} {option_type}")
-    fallback_token = str(abs(hash(f"{symbol}{expiry_date}{strike_int}{option_type}")) % 100000)
-    
-    return {
-        "token": fallback_token,
-        "symbol": build_option_symbol(symbol, expiry_date, strike_int, option_type),
-        "strike": strike_int,
-        "expiry": expiry_date,
-        "timestamp": datetime.now(),
-        "is_fallback": True
-    }
+        # Extract expiry dates and sort them (closest first)
+        try:
+            # Convert expiry strings to datetime objects for proper sorting
+            filtered_options['expiry_date'] = pd.to_datetime(filtered_options['expiry'], format='%d-%b-%y')
+            # Get unique expiry dates sorted by date
+            expiry_dates = sorted(filtered_options['expiry'].unique(), 
+                                key=lambda x: pd.to_datetime(x, format='%d-%b-%y'))
+        except:
+            # If datetime conversion fails, just sort the strings
+            expiry_dates = sorted(filtered_options['expiry'].unique())
+        
+        if len(expiry_dates) == 0:
+            logger.warning(f"No expiry dates found for {symbol}")
+            return {"CE": None, "PE": None}
+            
+        # Get the closest expiry date
+        closest_expiry = expiry_dates[0]
+        logger.info(f"Selected expiry date: {closest_expiry}")
+        
+        # Filter options by the closest expiry
+        expiry_options = filtered_options[filtered_options['expiry'] == closest_expiry]
+        
+        # Extract CE options
+        ce_options = expiry_options[expiry_options['symbol'].str.endswith('CE')]
+        
+        # Extract PE options
+        pe_options = expiry_options[expiry_options['symbol'].str.endswith('PE')]
+        
+        # Find closest strikes to ATM
+        closest_ce = None
+        closest_pe = None
+        
+        if not ce_options.empty:
+            # Calculate distance to ATM strike
+            ce_options['strike_distance'] = abs(ce_options['strike'] - atm_strike)
+            closest_ce_row = ce_options.loc[ce_options['strike_distance'].idxmin()]
+            closest_ce = closest_ce_row.to_dict()
+            logger.info(f"Found CE option: {closest_ce['symbol']} with token {closest_ce['token']} at strike {closest_ce['strike']}")
+        
+        if not pe_options.empty:
+            # Calculate distance to ATM strike
+            pe_options['strike_distance'] = abs(pe_options['strike'] - atm_strike)
+            closest_pe_row = pe_options.loc[pe_options['strike_distance'].idxmin()]
+            closest_pe = closest_pe_row.to_dict()
+            logger.info(f"Found PE option: {closest_pe['symbol']} with token {closest_pe['token']} at strike {closest_pe['strike']}")
+        
+        return {"CE": closest_ce, "PE": closest_pe}
+        
+    except Exception as e:
+        logger.error(f"Error finding ATM options: {e}", exc_info=True)
+        return {"CE": None, "PE": None}
 
-def clear_option_token_cache(older_than=None):
+def find_and_add_atm_options(symbol, current_price):
     """
-    Clear option token cache to force fresh lookups
-    
-    Args:
-        older_than (int, optional): Clear entries older than this many seconds
-    """
-    global option_token_cache
-    
-    if older_than is None:
-        # Clear all entries
-        logger.info(f"Clearing entire option token cache ({len(option_token_cache)} entries)")
-        option_token_cache = {}
-        return
-    
-    # Clear only entries older than specified time
-    current_time = datetime.now()
-    entries_to_remove = []
-    
-    for key, entry in option_token_cache.items():
-        timestamp = entry.get("timestamp", datetime.min)
-        age = (current_time - timestamp).total_seconds()
-        
-        if age > older_than:
-            entries_to_remove.append(key)
-    
-    # Remove old entries
-    for key in entries_to_remove:
-        del option_token_cache[key]
-    
-    logger.info(f"Cleared {len(entries_to_remove)} old entries from option token cache")
-
-# Removed old token and symbol fetching logic
-    """
-    Update symbol and token information comprehensively
-    
-    Args:
-        symbol (str): Existing symbol to update
-        new_token (str, optional): New token to replace existing token
-        new_symbol (str, optional): New symbol to replace existing symbol
-    
-    Returns:
-        bool: True if update successful, False otherwise
-    """
-    # Validate input
-    if symbol not in stocks_data and symbol not in options_data:
-        logger.warning(f"Symbol {symbol} not found for update")
-        return False
-    
-    # Determine if it's a stock or option
-    is_stock = symbol in stocks_data
-    is_option = symbol in options_data
-    
-    if is_stock:
-        stock_info = stocks_data[symbol]
-        
-        # Update token if provided
-        if new_token:
-            stock_info['token'] = new_token
-            logger.info(f"Updated token for stock {symbol}: {new_token}")
-        
-        # Update symbol if provided
-        if new_symbol:
-            # Update the key in stocks_data
-            stocks_data[new_symbol] = stocks_data.pop(symbol)
-            stock_info['symbol'] = new_symbol
-            logger.info(f"Updated stock symbol from {symbol} to {new_symbol}")
-        
-        return True
-    
-    if is_option:
-        option_info = options_data[symbol]
-        
-        # Update token if provided
-        if new_token:
-            option_info['token'] = new_token
-            logger.info(f"Updated token for option {symbol}: {new_token}")
-        
-        # Update symbol if provided
-        if new_symbol:
-            # Update the key in options_data
-            options_data[new_symbol] = options_data.pop(symbol)
-            option_info['symbol'] = new_symbol
-            logger.info(f"Updated option symbol from {symbol} to {new_symbol}")
-        
-        return True
-    
-    return False
-
-def search_and_update_symbol(old_symbol, search_text=None):
-    """
-    Search for a symbol and update its details
-    
-    Args:
-        old_symbol (str): Existing symbol to search and update
-        search_text (str, optional): Text to search, defaults to symbol itself
-    
-    Returns:
-        dict: Updated symbol information or None
-    """
-    if not search_text:
-        search_text = old_symbol
-    
-    # Search for the symbol using broker API
-    matches = search_symbols(search_text)
-    
-    if matches:
-        # Get the first match or find the most relevant
-        best_match = matches[0]
-        
-        # Extract new details
-        new_token = best_match.get('token')
-        new_symbol = best_match.get('name') or best_match.get('symbol')
-        
-        # Perform update
-        if update_symbol_token(old_symbol, new_token, new_symbol):
-            return {
-                'old_symbol': old_symbol,
-                'new_symbol': new_symbol,
-                'new_token': new_token,
-                'details': best_match
-            }
-    
-    return None
-
-def update_specific_option(option_symbol):
-    """
-    Specific function to update an option's details
-    """
-    # Example: BANKNIFTY28MAR2550300CE
-    result = search_and_update_symbol(option_symbol)
-    
-    if result:
-        logger.info(f"Successfully updated option: {result}")
-        return result
-    else:
-        logger.warning(f"Could not update option: {option_symbol}")
-        return None
-
-def add_option(symbol, strike, expiry, option_type, token=None, exchange="NFO"):
-    """
-    Add a new option for a stock with improved token handling
-    
-    Args:
-        symbol (str): Stock symbol 
-        strike (str): Option strike price
-        expiry (str): Option expiry date
-        option_type (str): Option type (CE/PE)
-        token (str, optional): Predefined token. Defaults to None.
-        exchange (str, optional): Exchange. Defaults to "NFO".
-    
-    Returns:
-        str: Unique option key or None if addition fails
-    """
-    # Validate and standardize inputs
-    symbol = symbol.upper()
-    option_type = option_type.upper()
-    
-    # Check if parent stock exists
-    if symbol not in stocks_data:
-        logger.error(f"Cannot add option: Parent stock {symbol} does not exist")
-        return None
-    
-    # Create properly formatted option symbol
-    option_symbol = build_option_symbol(symbol, expiry, strike, option_type)
-    
-    # Create unique option key
-    option_key = f"{symbol}_{expiry}_{strike}_{option_type}"
-    
-    # Return existing option key if already exists
-    if option_key in options_data:
-        logger.info(f"Option {option_key} already exists, returning existing key")
-        return option_key
-    
-    # Retrieve or generate token
-    if token is None:
-        # Use our improved token lookup
-        option_info = search_and_validate_option_token(symbol, strike, option_type, expiry)
-        if option_info and "token" in option_info:
-            token = option_info.get("token")
-            option_symbol = option_info.get("symbol", option_symbol)  # Use the symbol from the search result
-            logger.info(f"Using token for {option_symbol}: {token}")
-    
-    # Double-check token validity
-    if token is None or not token:
-        logger.warning(f"Could not find valid token for {option_symbol}, using fallback token")
-        token = str(hash(option_symbol) % 100000)
-        is_fallback = True
-    else:
-        is_fallback = False
-    
-    # Prepare option entry
-    option_entry = {
-        "symbol": option_symbol,
-        "token": token,
-        "exchange": exchange,
-        "ltp": None,
-        "high": None,
-        "low": None,
-        "open": None,
-        "previous": None,
-        "change_percent": 0,
-        "price_history": pd.DataFrame(columns=[
-            'timestamp', 'price', 'volume', 'open_interest', 
-            'change', 'open', 'high', 'low'
-        ]),
-        "signal": 0,
-        "strength": 0,
-        "trend": "NEUTRAL",
-        "strike": strike,
-        "expiry": expiry,
-        "parent_symbol": symbol,
-        "option_type": option_type,
-        "last_updated": None,
-        "data_source": "broker" if not is_fallback else "fallback",
-        "is_fallback": is_fallback
-    }
-    
-    # Store option data
-    options_data[option_key] = option_entry
-    
-    # Add to parent stock's options list
-    if option_type in stocks_data[symbol]["options"]:
-        if option_key not in stocks_data[symbol]["options"][option_type]:
-            stocks_data[symbol]["options"][option_type].append(option_key)
-    
-    # Update trading state
-    trading_state.add_option(option_key)
-    
-    # Mark for immediate update
-    last_data_update["options"][option_key] = None
-    
-    logger.info(f"Added new option: {option_symbol} ({token}) for {symbol}")
-    return option_key
-
-def remove_option(option_key):
-    """Remove an option from tracking"""
-    global options_data, stocks_data
-    
-    if option_key not in options_data:
-        return False
-    
-    # Get option details
-    option_info = options_data[option_key]
-    parent_symbol = option_info.get("parent_symbol")
-    option_type = option_info.get("option_type")
-    
-    # Exit any active trade on this option
-    if trading_state.active_trades.get(option_key, False):
-        exit_trade(option_key, reason="Option removed")
-    
-    # Remove from parent stock's options list
-    if parent_symbol in stocks_data and option_type in stocks_data[parent_symbol]["options"]:
-        if option_key in stocks_data[parent_symbol]["options"][option_type]:
-            stocks_data[parent_symbol]["options"][option_type].remove(option_key)
-        
-        # Update primary option if needed
-        if stocks_data[parent_symbol].get(f"primary_{option_type.lower()}") == option_key:
-            stocks_data[parent_symbol][f"primary_{option_type.lower()}"] = None
-    
-    # Clean up trading state
-    trading_state.remove_option(option_key)
-    
-    # Remove option data
-    del options_data[option_key]
-    
-    if option_key in last_data_update["options"]:
-        del last_data_update["options"][option_key]
-    
-    logger.info(f"Removed option: {option_key}")
-    return True
-
-def find_and_add_options(symbol, current_price=None, expiry_date=None):
-    """
-    Find and add ATM options for a stock with comprehensive error handling
+    Find and add ATM options for a stock
     
     Args:
         symbol (str): Stock or index symbol
-        current_price (float, optional): Current price of the stock/index. Defaults to None.
-        expiry_date (str, optional): Expiry date in format "DDMMMYY". Defaults to None.
-    
+        current_price (float): Current price of the stock/index
+        
     Returns:
         dict: Dictionary with CE and PE option keys
     """
-    # Get current price if not provided
-    if current_price is None and symbol in stocks_data:
-        current_price = stocks_data[symbol].get("ltp")
-    
-    if current_price is None:
-        logger.error(f"Cannot find options: No price available for {symbol}")
+    if current_price is None or current_price <= 0:
+        logger.error(f"Cannot find options: Invalid price {current_price} for {symbol}")
         return {"CE": None, "PE": None}
     
-    # Get option tokens for CE and PE using enhanced search
-    ce_info = get_option_token(symbol, current_price, "CE", expiry_date)
-    pe_info = get_option_token(symbol, current_price, "PE", expiry_date)
+    # Find ATM options in CSV
+    atm_options = find_atm_options_in_csv(symbol, current_price)
     
     # Results to track added options
     added_options = {"CE": None, "PE": None}
     
-    # Add CE option
-    if ce_info:
-        try:
-            logger.info(f"Adding CE option for {symbol}: Strike={ce_info['strike']}, Token={ce_info['token']}")
+    # Process CE option
+    ce_option_data = atm_options.get("CE")
+    if ce_option_data:
+        ce_success = add_option_from_csv_data(ce_option_data)
+        if ce_success:
+            # Create unique option key based on the data
+            try:
+                expiry_date = ce_option_data.get('expiry', '').replace('-', '')
+                # Handle month format (convert Apr to APR if needed)
+                month_match = re.search(r'([A-Za-z]+)', expiry_date)
+                if month_match:
+                    month = month_match.group(1).upper()
+                    expiry_date = expiry_date.replace(month_match.group(1), month)
+            except:
+                # If regex fails, use expiry as is
+                expiry_date = ce_option_data.get('expiry', '')
+                
+            strike = str(int(ce_option_data.get('strike', 0)))
+            ce_key = f"{symbol}_{expiry_date}_{strike}_CE"
             
-            ce_key = add_option(
-                symbol,
-                str(ce_info["strike"]),
-                ce_info["expiry"],
-                "CE",
-                ce_info["token"]
-            )
-            added_options["CE"] = ce_key
-            
-            # Set as primary CE
-            if ce_key and symbol in stocks_data:
+            # Set as primary CE option
+            if symbol in stocks_data:
                 stocks_data[symbol]["primary_ce"] = ce_key
                 logger.info(f"Set {ce_key} as primary CE option for {symbol}")
                 
-                # Immediately fetch data for this option
+                # Fetch option data if broker connected
                 if broker_connected:
                     fetch_option_data(ce_key)
-        except Exception as e:
-            logger.error(f"Error adding CE option for {symbol}: {e}")
-    else:
-        logger.warning(f"Could not get CE option token for {symbol}")
+                
+            added_options["CE"] = ce_key
     
-    # Add PE option
-    if pe_info:
-        try:
-            logger.info(f"Adding PE option for {symbol}: Strike={pe_info['strike']}, Token={pe_info['token']}")
+    # Process PE option
+    pe_option_data = atm_options.get("PE")
+    if pe_option_data:
+        pe_success = add_option_from_csv_data(pe_option_data)
+        if pe_success:
+            # Create unique option key based on the data
+            try:
+                expiry_date = pe_option_data.get('expiry', '').replace('-', '')
+                # Handle month format (convert Apr to APR if needed)
+                month_match = re.search(r'([A-Za-z]+)', expiry_date)
+                if month_match:
+                    month = month_match.group(1).upper()
+                    expiry_date = expiry_date.replace(month_match.group(1), month)
+            except:
+                # If regex fails, use expiry as is
+                expiry_date = pe_option_data.get('expiry', '')
+                
+            strike = str(int(pe_option_data.get('strike', 0)))
+            pe_key = f"{symbol}_{expiry_date}_{strike}_PE"
             
-            pe_key = add_option(
-                symbol,
-                str(pe_info["strike"]),
-                pe_info["expiry"],
-                "PE",
-                pe_info["token"]
-            )
-            added_options["PE"] = pe_key
-            
-            # Set as primary PE
-            if pe_key and symbol in stocks_data:
+            # Set as primary PE option
+            if symbol in stocks_data:
                 stocks_data[symbol]["primary_pe"] = pe_key
                 logger.info(f"Set {pe_key} as primary PE option for {symbol}")
                 
-                # Immediately fetch data for this option
+                # Fetch option data if broker connected
                 if broker_connected:
                     fetch_option_data(pe_key)
-        except Exception as e:
-            logger.error(f"Error adding PE option for {symbol}: {e}")
-    else:
-        logger.warning(f"Could not get PE option token for {symbol}")
+                
+            added_options["PE"] = pe_key
     
-    # Log the results
-    logger.info(f"Added options for {symbol}: CE={added_options['CE']}, PE={added_options['PE']}")
+    logger.info(f"Added options for {symbol}: CE={added_options.get('CE')}, PE={added_options.get('PE')}")
     return added_options
-
-def find_options_at_strikes(symbol, strikes, expiry_date=None):
+def initialize_from_csv():
     """
-    Find options at specific strike prices
-    
-    Args:
-        symbol (str): Stock or index symbol
-        strikes (list): List of strike prices to find
-        expiry_date (str, optional): Expiry date in format "DDMMMYY". Defaults to None.
-    
-    Returns:
-        dict: Dictionary with CE and PE options at each strike
+    Initialize with default stocks only, without loading everything from CSV
     """
-    results = {
-        "CE": {},
-        "PE": {}
-    }
+    # Initialize global DataFrame for CSV data
+    global tokens_and_symbols_df
+    tokens_and_symbols_df = None
     
-    if not strikes:
-        logger.warning(f"No strikes provided for {symbol}")
-        return results
+    # Load CSV data
+    load_tokens_and_symbols_from_csv()
     
-    # Get expiry date if not provided
-    if not expiry_date:
-        expiry_date = get_next_expiry_date(symbol)
-    
-    logger.info(f"Finding options for {symbol} at strikes {strikes} for expiry {expiry_date}")
-    
-    # Process each strike
-    for strike in strikes:
-        # Get CE option
-        ce_info = search_and_validate_option_token(symbol, strike, "CE", expiry_date)
-        if ce_info:
-            try:
-                ce_key = add_option(
-                    symbol,
-                    str(ce_info["strike"]),
-                    ce_info["expiry"],
-                    "CE",
-                    ce_info["token"]
-                )
-                results["CE"][strike] = ce_key
-                logger.info(f"Added CE option for {symbol} at strike {strike}: {ce_key}")
-            except Exception as e:
-                logger.error(f"Error adding CE option at strike {strike}: {e}")
+    # Add default stocks
+    for stock in DEFAULT_STOCKS:
+        add_stock_from_csv_data({
+            'token': stock["token"],
+            'symbol': stock["symbol"],
+            'name': stock["symbol"],  # Use symbol as name for default stocks
+            'exch_seg': stock["exchange"]
+        })
         
-        # Get PE option
-        pe_info = search_and_validate_option_token(symbol, strike, "PE", expiry_date)
-        if pe_info:
-            try:
-                pe_key = add_option(
-                    symbol,
-                    str(pe_info["strike"]),
-                    pe_info["expiry"],
-                    "PE",
-                    pe_info["token"]
-                )
-                results["PE"][strike] = pe_key
-                logger.info(f"Added PE option for {symbol} at strike {strike}: {pe_key}")
-            except Exception as e:
-                logger.error(f"Error adding PE option at strike {strike}: {e}")
+    logger.info(f"Initialization complete with default stocks")
     
-    # Return the results
-    return results
-
-def find_suitable_options(stock_symbol, stock_price, expiry_days=7):
-    """
-    Find suitable options for a stock based on its current price.
-    
-    Args:
-        stock_symbol (str): Stock or index symbol
-        stock_price (float): Current price of the stock/index
-        expiry_days (int): Days to expiry from today
-
-    Returns:
-        tuple: CE and PE option keys
-    """
-    # Find closest expiry date based on expiry_days
-    from datetime import datetime, timedelta
-    today = datetime.now()
-    expiry_date = today + timedelta(days=expiry_days)
-    expiry_str = expiry_date.strftime('%d%b%y').upper()  # e.g., "27MAR25"
-    
-    # Find and add options
-    options = find_and_add_options(stock_symbol, stock_price, expiry_str)
-    
-    if not options:
-        return None, None
-        
-    return options["CE"], options["PE"]
-
-def update_option_selection(force_update=False):
-    """
-    Update option selection for all stocks based on current prices, with improved handling.
-    
-    Args:
-        force_update (bool, optional): Force update regardless of time interval. Defaults to False.
-    """
-    global stocks_data, last_option_selection_update, options_data
-    
-    current_time = datetime.now()
-    
-    # Only update periodically unless forced
-    if not force_update and (current_time - last_option_selection_update).total_seconds() < OPTION_AUTO_SELECT_INTERVAL:
-        return
-    
-    logger.info("Updating option selection based on current stock prices")
-    
-    # Process each stock
-    for symbol, stock_info in stocks_data.items():
-        current_price = stock_info.get("ltp")
-        
-        if current_price is None or current_price <= 0:
-            logger.warning(f"Skipping option selection for {symbol}: Invalid price {current_price}")
-            continue
-            
-        # Check if we already have primary options
-        primary_ce = stock_info.get("primary_ce")
-        primary_pe = stock_info.get("primary_pe")
-        
-        need_new_options = False
-        
-        # If we have both options, check if they're still ATM
-        if primary_ce and primary_pe and primary_ce in options_data and primary_pe in options_data:
-            ce_strike = float(options_data[primary_ce].get("strike", 0))
-            pe_strike = float(options_data[primary_pe].get("strike", 0))
-            
-            # Determine strike interval based on symbol
-            if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
-                strike_interval = 50
-            elif symbol in ["RELIANCE", "SBIN", "HDFCBANK", "ICICIBANK", "INFY"]:
-                strike_interval = 20
-            else:
-                strike_interval = 10
-            
-            # Check if current options are still close to ATM
-            ce_distance = abs(current_price - ce_strike)
-            pe_distance = abs(current_price - pe_strike)
-            
-            # If either option is too far from current price
-            if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
-                need_new_options = True
-                logger.info(f"Options for {symbol} are too far from current price (CE: {ce_distance}, PE: {pe_distance})")
-            
-            # If options are using fallback prices too often
-            elif any(options_data[opt].get("using_fallback", False) for opt in [primary_ce, primary_pe]):
-                need_new_options = True
-                logger.info(f"Options for {symbol} are using fallback prices, trying to find better ones")
-        else:
-            # If we're missing primary options, we need new ones
-            need_new_options = True
-            logger.info(f"Missing primary options for {symbol}")
-        
-        # If we need new options, find suitable ones
-        if need_new_options:
-            # Get the next expiry date (can be customized by symbol)
-            expiry_date = get_next_expiry_date(symbol)
-            
-            # Find and add options
-            options = find_and_add_options(symbol, current_price, expiry_date)
-            
-            # Update the stock's primary options
-            if options["CE"]:
-                stock_info["primary_ce"] = options["CE"]
-            
-            if options["PE"]:
-                stock_info["primary_pe"] = options["PE"]
-            
-            logger.info(f"Selected new options for {symbol}: CE={options.get('CE')}, PE={options.get('PE')}")
-    
-    # Update timestamp
-    last_option_selection_update = current_time
-
-def schedule_option_token_refresh():
-    """
-    Schedule periodic option token refreshes to ensure tokens are valid
-    """
-    global option_token_cache
-    
-    # This function would typically be called in a thread
-    # For options trading applications, tokens should be refreshed daily
-    
-    # Clear tokens older than 12 hours
-    clear_option_token_cache(older_than=43200)
-    
-    # Refresh tokens for active trades
-    for option_key, is_active in trading_state.active_trades.items():
-        if is_active and option_key in options_data:
-            option_info = options_data[option_key]
-            
-            # Only refresh if using fallback or having issues
-            if option_info.get("is_fallback", False) or option_info.get("using_fallback", False):
-                logger.info(f"Refreshing token for active trade option: {option_key}")
-                
-                symbol = option_info.get("parent_symbol")
-                strike = option_info.get("strike")
-                option_type = option_info.get("option_type")
-                expiry = option_info.get("expiry")
-                
-                if all([symbol, strike, option_type, expiry]):
-                    # Try to get a better token
-                    new_token_info = search_and_validate_option_token(
-                        symbol, strike, option_type, expiry
-                    )
-                    
-                    if new_token_info and not new_token_info.get("is_fallback", False):
-                        # Update the option info
-                        option_info["token"] = new_token_info.get("token")
-                        option_info["symbol"] = new_token_info.get("symbol", option_info.get("symbol"))
-                        option_info["is_fallback"] = False
-                        
-                        logger.info(f"Successfully refreshed token for {option_key}")
-    
-    logger.info(f"Option token refresh completed. Cache size: {len(option_token_cache)}")
-
-# ============ Technical Indicators ============
 
 # ============ Technical Indicators ============
 def calculate_rsi(data, period=RSI_PERIOD):
@@ -5416,10 +4270,11 @@ def refresh_session_if_needed():
         smart_api = None
         return connect_to_broker()
 
+# Function to search for symbol tokens
 @rate_limited
 def search_symbols(search_text, exchange=None):
     """
-    Enhanced symbol search with exact matching prioritized that works with current SmartAPI version
+    Enhanced symbol search with exact matching prioritized
     
     Args:
         search_text (str): Text to search for
@@ -5448,17 +4303,8 @@ def search_symbols(search_text, exchange=None):
     target_exchange = exchange or config.exchange
     
     try:
-        # Check if the SmartAPI version uses different parameters for searchScrip
-        try:
-            # Newer versions might use 'searchtext'
-            search_resp = smart_api.searchScrip(exchange=target_exchange, searchtext=search_text)
-        except TypeError:
-            try:
-                # Try with 'search_text' parameter
-                search_resp = smart_api.searchScrip(exchange=target_exchange, search_text=search_text)
-            except TypeError:
-                # Some versions use positional arguments
-                search_resp = smart_api.searchScrip(target_exchange, search_text)
+        # Perform the search
+        search_resp = smart_api.searchScrip(exchange=target_exchange, searchtext=search_text)
         
         if isinstance(search_resp, dict) and search_resp.get("status"):
             # Extract matching symbols
@@ -5495,143 +4341,6 @@ def search_symbols(search_text, exchange=None):
     # If all attempts failed
     logger.warning(f"All search attempts failed for '{search_text}'")
     return []
-def find_option_token_in_script_master(symbol, strike, option_type, expiry_date=None):
-    """
-    Find option token directly in script master data with improved matching
-    
-    Args:
-        symbol (str): Symbol name (e.g., NIFTY, BANKNIFTY)
-        strike (float/int): Strike price
-        option_type (str): Option type (CE or PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
-        
-    Returns:
-        dict: Option information or None if not found
-    """
-    global script_master_data, script_master_index
-    
-    if not script_master_loaded and not load_script_master():
-        logger.error("Script master data not loaded")
-        return None
-    
-    # Standardize inputs
-    symbol = symbol.upper()
-    option_type = option_type.upper()
-    strike_str = str(int(float(strike)))
-    
-    # Get expiry if not provided
-    if not expiry_date:
-        expiry_date = get_next_expiry_date(symbol)
-    expiry_date = expiry_date.upper()
-    
-    # Create possible variations of the symbol
-    variations = [
-        f"{symbol}{expiry_date}{strike_str}{option_type}",  # NIFTY27MAR2519000CE
-        f"{symbol}{strike_str}{option_type}",               # NIFTY19000CE
-        f"{symbol}{option_type}{expiry_date}{strike_str}",  # NIFTYCE27MAR2519000
-        f"{symbol}{option_type}{strike_str}",               # NIFTYCE19000
-    ]
-    
-    # Search in script master data
-    for entry in script_master_data:
-        trading_symbol = entry.get("symbol", "").upper()
-        
-        for variation in variations:
-            if trading_symbol == variation:
-                return {
-                    "token": entry.get("token"),
-                    "symbol": trading_symbol,
-                    "strike": strike_str,
-                    "expiry": expiry_date,
-                    "is_fallback": False
-                }
-    
-    # If not found, try a more lenient search
-    for entry in script_master_data:
-        trading_symbol = entry.get("symbol", "").upper()
-        
-        # Check if the trading symbol contains all the key components
-        if (symbol in trading_symbol and 
-            strike_str in trading_symbol and 
-            option_type in trading_symbol):
-            
-            # For expiry, just check if the month part is present (e.g., MAR from 27MAR25)
-            if expiry_date and len(expiry_date) >= 5:
-                month_part = expiry_date[2:5]  # e.g., "MAR" from "27MAR25"
-                if month_part in trading_symbol:
-                    return {
-                        "token": entry.get("token"),
-                        "symbol": trading_symbol,
-                        "strike": strike_str,
-                        "expiry": expiry_date,
-                        "is_fallback": False
-                    }
-    
-    logger.warning(f"No matching option found in script master for {symbol} {strike_str} {option_type} {expiry_date}")
-    return None
-
-def verify_option_token(symbol, token, exchange="NFO"):
-    """Verify if an option token is valid by attempting to fetch its data"""
-    if not broker_connected or not smart_api:
-        return False
-        
-    try:
-        resp = smart_api.ltpData(exchange, symbol, token)
-        if isinstance(resp, dict) and resp.get("status"):
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error verifying token {token} for {symbol}: {e}")
-        return False
-
-def get_option_token(symbol, current_price=None, option_type="CE", expiry_date=None):
-    """
-    Get option token with appropriate strike price rounding and fallback mechanism
-    
-    Args:
-        symbol (str): Stock/index symbol
-        current_price (float, optional): Current price for ATM options
-        option_type (str, optional): Option type (CE/PE)
-        expiry_date (str, optional): Expiry date in format "DDMMMYY"
-        
-    Returns:
-        dict: Option information with token or None if failed
-    """
-    # Get current price if not provided
-    if current_price is None and symbol in stocks_data:
-        current_price = stocks_data[symbol].get("ltp")
-    
-    if current_price is None:
-        logger.error(f"Cannot get option token: No price available for {symbol}")
-        return None
-    
-    # Get expiry date if not provided
-    if not expiry_date:
-        expiry_date = get_next_expiry_date(symbol)
-    
-    # Calculate rounded strike appropriate for the current price
-    rounded_strike = calculate_rounded_strike(current_price)
-    
-    logger.info(f"Getting option token for {symbol} {rounded_strike} {option_type} {expiry_date}")
-    
-    # First try to find it in the script master 
-    option_info = find_option_token_in_script_master(symbol, rounded_strike, option_type, expiry_date)
-    
-    if option_info:
-        return option_info
-    
-    # If not found in script master, create a fallback token
-    # This is more reliable than searching using the API which appears to be failing
-    fallback_token = str(abs(hash(f"{symbol}{expiry_date}{rounded_strike}{option_type}")) % 100000)
-    logger.warning(f"Could not find token for {symbol}{expiry_date}{rounded_strike}{option_type}, using fallback token: {fallback_token}")
-    
-    return {
-        "token": fallback_token,
-        "symbol": f"{symbol}{expiry_date}{int(rounded_strike)}{option_type}",
-        "strike": str(int(rounded_strike)),
-        "expiry": expiry_date,
-        "is_fallback": True
-    }
 
 # Function to fetch data in bulk (up to 50 symbols at once)
 def fetch_bulk_stock_data(symbols):
@@ -5898,560 +4607,6 @@ def cleanup_inactive_stocks():
         if should_remove_stock(symbol):
             remove_stock(symbol)
 
-def fetch_bulk_data():
-    """
-    Fetch all stock and option data in bulk to minimize API calls
-    Returns a dictionary with all fetched data
-    """
-    global smart_api, broker_connected, stocks_data, options_data, pcr_data
-    
-    if not broker_connected or smart_api is None:
-        logger.warning("Cannot fetch bulk data: Not connected to broker")
-        return {}
-    
-    # Refresh session if needed
-    refresh_session_if_needed()
-    
-    # Collect all symbols and tokens to fetch in a single call where possible
-    symbols_to_fetch = {}  # {exchange: {symbol: token}}
-    
-    # Add stocks
-    for symbol, stock_info in stocks_data.items():
-        exchange = stock_info.get("exchange", "NSE")
-        token = stock_info.get("token")
-        
-        if token and symbol:
-            if exchange not in symbols_to_fetch:
-                symbols_to_fetch[exchange] = {}
-            symbols_to_fetch[exchange][symbol] = token
-    
-    # Add options (only include options with validated tokens)
-    for option_key, option_info in options_data.items():
-        # Skip options with fallback tokens or that were using fallback data
-        if option_info.get("is_fallback", False) or option_info.get("using_fallback", False):
-            continue
-            
-        exchange = option_info.get("exchange", "NFO")
-        symbol = option_info.get("symbol")
-        token = option_info.get("token")
-        
-        if token and symbol:
-            if exchange not in symbols_to_fetch:
-                symbols_to_fetch[exchange] = {}
-            symbols_to_fetch[exchange][symbol] = token
-    
-    # Fetch data in batches by exchange
-    all_results = {}
-    
-    for exchange, symbols in symbols_to_fetch.items():
-        # Process in batches of BULK_FETCH_SIZE to respect API limits
-        symbol_items = list(symbols.items())
-        
-        for i in range(0, len(symbol_items), BULK_FETCH_SIZE):
-            batch = symbol_items[i:i+BULK_FETCH_SIZE]
-            batch_symbols = {s: t for s, t in batch}
-            
-            # Build the bulk request
-            try:
-                # Create a list of tokens for this batch
-                token_list = list(batch_symbols.values())
-                
-                # Make a bulk LTP request
-                logger.info(f"Making bulk LTP request for {len(token_list)} symbols on {exchange}")
-                
-                # Some brokers support bulk LTP with a list of tokens
-                ltp_response = None
-                
-                try:
-                    # Try using broker's bulk data API if available
-                    # Example: ltp_response = smart_api.ltpDataBulk(exchange, token_list)
-                    
-                    # If the API doesn't have a dedicated bulk endpoint, we'll simulate it
-                    # by making individual requests with minimal delay
-                    ltp_response = {}
-                    
-                    for symbol, token in batch_symbols.items():
-                        try:
-                            single_resp = smart_api.ltpData(exchange, symbol, token)
-                            if isinstance(single_resp, dict) and single_resp.get("status"):
-                                ltp_response[symbol] = single_resp.get("data", {})
-                            
-                            # Small delay to avoid rate limiting
-                            time.sleep(0.1)
-                        except Exception as e:
-                            logger.error(f"Error fetching data for {symbol}: {e}")
-                    
-                except Exception as bulk_err:
-                    logger.error(f"Bulk LTP request failed: {bulk_err}. Falling back to individual requests.")
-                    ltp_response = {}
-                
-                # Process the response
-                if ltp_response:
-                    for symbol, data in ltp_response.items():
-                        all_results[f"{exchange}:{symbol}"] = {
-                            "exchange": exchange,
-                            "symbol": symbol,
-                            "ltp": float(data.get("ltp", 0) or 0),
-                            "open": float(data.get("open", 0) or 0),
-                            "high": float(data.get("high", 0) or 0),
-                            "low": float(data.get("low", 0) or 0),
-                            "previous": float(data.get("previous", 0) or 0),
-                            "volume": data.get("tradingSymbol", 0),
-                            "timestamp": datetime.now()
-                        }
-                else:
-                    logger.warning(f"Empty response for bulk LTP request on {exchange}")
-                
-            except Exception as e:
-                logger.error(f"Error in bulk fetch for {exchange}: {e}")
-            
-            # Small delay between batches
-            time.sleep(0.2)
-    
-    return all_results
-
-def update_data_from_bulk_results(bulk_results):
-    """
-    Update stocks and options data from bulk fetch results
-    
-    Args:
-        bulk_results (dict): Results from bulk fetch
-    """
-    global stocks_data, options_data, volatility_data, pcr_data, ui_data_store
-    
-    # Track which stocks and options were updated
-    updated_stocks = set()
-    updated_options = set()
-    
-    # Update stock data
-    for symbol, stock_info in stocks_data.items():
-        exchange = stock_info.get("exchange", "NSE")
-        key = f"{exchange}:{symbol}"
-        
-        if key in bulk_results:
-            # Get the fetched data
-            data = bulk_results[key]
-            
-            # Update stock info
-            previous_ltp = stock_info["ltp"]
-            stock_info["ltp"] = data.get("ltp", previous_ltp)
-            stock_info["open"] = data.get("open", stock_info.get("open"))
-            stock_info["high"] = data.get("high", stock_info.get("high"))
-            stock_info["low"] = data.get("low", stock_info.get("low"))
-            stock_info["previous"] = data.get("previous", stock_info.get("previous"))
-            
-            # Ensure all values are valid
-            for field in ["ltp", "open", "high", "low", "previous"]:
-                if stock_info[field] is None or stock_info[field] <= 0:
-                    stock_info[field] = previous_ltp or 1.0
-            
-            # Calculate movement percentage
-            if previous_ltp is not None and previous_ltp > 0:
-                stock_info["movement_pct"] = ((stock_info["ltp"] - previous_ltp) / previous_ltp) * 100
-            
-            # Calculate change percentage
-            if stock_info["open"] and stock_info["open"] > 0:
-                stock_info["change_percent"] = ((stock_info["ltp"] - stock_info["open"]) / stock_info["open"]) * 100
-            
-            # Add to price history
-            timestamp = data.get("timestamp", pd.Timestamp.now())
-            
-            new_data = {
-                'timestamp': timestamp,
-                'price': stock_info["ltp"],
-                'volume': data.get("volume", 0),
-                'open': stock_info["open"],
-                'high': stock_info["high"],
-                'low': stock_info["low"]
-            }
-            
-            # Append to price history DataFrame with proper index handling
-            with price_history_lock:
-                stock_info["price_history"] = pd.concat([
-                    stock_info["price_history"], 
-                    pd.DataFrame([new_data])
-                ], ignore_index=True)
-                
-                # Limit price history size
-                if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                    stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-            
-            # Update volatility
-            if previous_ltp is not None and previous_ltp > 0:
-                pct_change = (stock_info["ltp"] - previous_ltp) / previous_ltp * 100
-                update_volatility(symbol, pct_change)
-            
-            # Update support/resistance levels periodically to save processing
-            if stock_info.get("last_sr_update") is None or \
-               (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
-                calculate_support_resistance(symbol)
-                stock_info["last_sr_update"] = datetime.now()
-            
-            # Predict best strategy for this stock periodically
-            if stock_info.get("last_strategy_update") is None or \
-               (datetime.now() - stock_info.get("last_strategy_update")).total_seconds() > 300:  # Every 5 minutes
-                predict_strategy_for_stock(symbol)
-                stock_info["last_strategy_update"] = datetime.now()
-            
-            # Update last update time
-            stock_info["last_updated"] = datetime.now()
-            last_data_update["stocks"][symbol] = datetime.now()
-            
-            # Update UI data store
-            ui_data_store['stocks'][symbol] = {
-                'price': stock_info["ltp"],
-                'change': stock_info["change_percent"],
-                'ohlc': {
-                    'open': stock_info["open"],
-                    'high': stock_info["high"],
-                    'low': stock_info["low"],
-                    'previous': stock_info["previous"]
-                },
-                'last_updated': stock_info["last_updated"].strftime('%H:%M:%S')
-            }
-            
-            updated_stocks.add(symbol)
-            logger.debug(f"Updated stock data for {symbol} from bulk results")
-    
-    # Update option data
-    for option_key, option_info in options_data.items():
-        exchange = option_info.get("exchange", "NFO")
-        symbol = option_info.get("symbol")
-        key = f"{exchange}:{symbol}"
-        
-        if key in bulk_results:
-            # Get the fetched data
-            data = bulk_results[key]
-            
-            # Update option info
-            previous_ltp = option_info["ltp"]
-            option_info["ltp"] = data.get("ltp", previous_ltp)
-            
-            # Skip options that are using fallback tokens or have invalid data
-            if option_info.get("is_fallback", False) or option_info["ltp"] <= 0:
-                continue
-                
-            option_info["open"] = data.get("open", option_info.get("open", option_info["ltp"]))
-            option_info["high"] = data.get("high", option_info.get("high", option_info["ltp"]))
-            option_info["low"] = data.get("low", option_info.get("low", option_info["ltp"]))
-            option_info["previous"] = data.get("previous", option_info.get("previous", option_info["ltp"]))
-            
-            # Ensure all values are valid
-            for field in ["ltp", "open", "high", "low", "previous"]:
-                if option_info[field] is None or option_info[field] <= 0:
-                    option_info[field] = previous_ltp or 1.0
-            
-            # Calculate change percentage
-            if previous_ltp is not None and previous_ltp > 0:
-                option_info["change_percent"] = ((option_info["ltp"] - previous_ltp) / previous_ltp) * 100
-            
-            # Add to price history
-            timestamp = data.get("timestamp", pd.Timestamp.now())
-            
-            new_data = {
-                'timestamp': timestamp,
-                'price': option_info["ltp"],
-                'volume': data.get("volume", 0),
-                'open_interest': data.get("open_interest", 0),
-                'change': option_info.get("change_percent", 0),
-                'open': option_info["open"],
-                'high': option_info["high"],
-                'low': option_info["low"],
-                'is_fallback': False
-            }
-            
-            # Thread-safe price history update
-            with price_history_lock:
-                # Ensure all columns exist
-                for col in new_data.keys():
-                    if col not in option_info["price_history"].columns:
-                        option_info["price_history"][col] = np.nan
-                
-                option_info["price_history"] = pd.concat([
-                    option_info["price_history"], 
-                    pd.DataFrame([new_data])
-                ], ignore_index=True)
-                
-                # Limit history size
-                if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                    option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-            
-            # Generate option signals
-            try:
-                generate_option_signals(option_key)
-            except Exception as signal_err:
-                logger.warning(f"Signal generation failed for {option_key}: {signal_err}")
-            
-            # Set last updated timestamp
-            option_info["last_updated"] = datetime.now()
-            option_info["using_fallback"] = False
-            last_data_update["options"][option_key] = datetime.now()
-            
-            # Update UI data store for primary options
-            parent_symbol = option_info.get("parent_symbol")
-            option_type = option_info.get("option_type", "").lower()
-            
-            if parent_symbol and option_type:
-                # Check if this is the primary option for the stock
-                primary_option_key = stocks_data.get(parent_symbol, {}).get(f"primary_{option_type}")
-                
-                if primary_option_key == option_key:
-                    # Ensure the parent symbol exists in UI data store
-                    if parent_symbol not in ui_data_store['options']:
-                        ui_data_store['options'][parent_symbol] = {}
-                    
-                    # Update UI data
-                    ui_data_store['options'][parent_symbol][option_type] = {
-                        'strike': option_info.get("strike", "N/A"),
-                        'price': option_info["ltp"],
-                        'signal': option_info.get("signal", 0),
-                        'strength': option_info.get("strength", 0),
-                        'trend': option_info.get("trend", "NEUTRAL"),
-                        'using_fallback': False
-                    }
-            
-            updated_options.add(option_key)
-            logger.debug(f"Updated option data for {option_key} from bulk results")
-    
-    # For options not in bulk results, use fallback calculation for primary options
-    for symbol in stocks_data.keys():
-        # Skip symbols that were already updated
-        if symbol in updated_stocks:
-            continue
-        
-        # Process CE and PE primary options
-        for option_type in ["ce", "pe"]:
-            option_key = stocks_data[symbol].get(f"primary_{option_type}")
-            
-            # Skip if option doesn't exist or was already updated
-            if not option_key or option_key in updated_options:
-                continue
-            
-            # Use fallback calculation for this option
-            option_info = options_data.get(option_key)
-            if not option_info:
-                continue
-                
-            # Get parent stock price
-            parent_price = stocks_data[symbol].get("ltp")
-            if not parent_price or parent_price <= 0:
-                continue
-                
-            # Get strike price
-            strike_price = float(option_info.get("strike", 0))
-            if strike_price <= 0:
-                continue
-                
-            # Calculate theoretical price using simple model
-            previous_ltp = option_info.get("ltp", 0)
-            
-            # Simple option pricing model
-            time_to_expiry = 7/365  # Default 7 days
-            volatility = calculate_volatility(symbol) or 0.3  # Use stock volatility or default to 30%
-            
-            if option_type == "ce":
-                # Simple call option pricing - intrinsic + time value
-                intrinsic = max(0, parent_price - strike_price)
-                time_value = parent_price * volatility * time_to_expiry
-                ltp = max(intrinsic + time_value, 5)
-            else:  # PE
-                # Simple put option pricing - intrinsic + time value
-                intrinsic = max(0, strike_price - parent_price)
-                time_value = parent_price * volatility * time_to_expiry
-                ltp = max(intrinsic + time_value, 5)
-            
-            # Update option info
-            option_info["ltp"] = ltp
-            option_info["open"] = option_info.get("open", ltp)
-            option_info["high"] = max(option_info.get("high", 0), ltp)
-            option_info["low"] = min(option_info.get("low", float('inf')) if option_info.get("low") is not None and option_info.get("low") > 0 else float('inf'), ltp)
-            option_info["previous"] = previous_ltp or ltp
-            option_info["change_percent"] = ((ltp / previous_ltp) - 1) * 100 if previous_ltp and previous_ltp > 0 else 0
-            
-            # Add to price history
-            timestamp = pd.Timestamp.now()
-            
-            new_data = {
-                'timestamp': timestamp,
-                'price': ltp,
-                'volume': 0,
-                'open_interest': 0,
-                'change': option_info.get("change_percent", 0),
-                'open': option_info["open"],
-                'high': option_info["high"],
-                'low': option_info["low"],
-                'is_fallback': True
-            }
-            
-            # Thread-safe price history update
-            with price_history_lock:
-                # Ensure all columns exist
-                for col in new_data.keys():
-                    if col not in option_info["price_history"].columns:
-                        option_info["price_history"][col] = np.nan
-                
-                option_info["price_history"] = pd.concat([
-                    option_info["price_history"], 
-                    pd.DataFrame([new_data])
-                ], ignore_index=True)
-                
-                # Limit history size
-                if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                    option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-            
-            # Generate option signals
-            try:
-                generate_option_signals(option_key)
-            except Exception as signal_err:
-                logger.warning(f"Signal generation failed for {option_key}: {signal_err}")
-            
-            # Update timestamps and flags
-            option_info["last_updated"] = datetime.now()
-            option_info["using_fallback"] = True
-            option_info["fallback_reason"] = "Not found in bulk results"
-            last_data_update["options"][option_key] = datetime.now()
-            
-            # Update UI data store
-            if symbol not in ui_data_store['options']:
-                ui_data_store['options'][symbol] = {}
-            
-            ui_data_store['options'][symbol][option_type] = {
-                'strike': option_info.get("strike", "N/A"),
-                'price': ltp,
-                'signal': option_info.get("signal", 0),
-                'strength': option_info.get("strength", 0),
-                'trend': option_info.get("trend", "NEUTRAL"),
-                'using_fallback': True
-            }
-            
-            logger.debug(f"Updated option {option_key} with fallback calculation")
-    
-    # Calculate PCR from updated data
-    calculate_pcr_from_options()
-    
-    logger.info(f"Bulk update completed: Updated {len(updated_stocks)} stocks and {len(updated_options)} options")
-
-def calculate_pcr_from_options():
-    """
-    Calculate PCR data directly from option prices to avoid extra API calls
-    Updates global pcr_data structure
-    """
-    global pcr_data, stocks_data, options_data
-    
-    for symbol in stocks_data.keys():
-        if symbol not in pcr_data:
-            pcr_data[symbol] = {
-                "current": 1.0,
-                "history": deque(maxlen=PCR_HISTORY_LENGTH),
-                "trend": "NEUTRAL",
-                "strength": 0.0,
-                "last_updated": None
-            }
-        
-        # Get all CE and PE options for this symbol
-        ce_options = []
-        pe_options = []
-        
-        if symbol in stocks_data:
-            ce_keys = stocks_data[symbol].get("options", {}).get("CE", [])
-            pe_keys = stocks_data[symbol].get("options", {}).get("PE", [])
-            
-            for key in ce_keys:
-                if key in options_data and options_data[key].get("ltp") is not None:
-                    ce_options.append(options_data[key])
-            
-            for key in pe_keys:
-                if key in options_data and options_data[key].get("ltp") is not None:
-                    pe_options.append(options_data[key])
-        
-        # Calculate total CE and PE values (price as proxy for open interest)
-        total_ce = 0
-        total_pe = 0
-        
-        for option in ce_options:
-            total_ce += option["ltp"]
-        
-        for option in pe_options:
-            total_pe += option["ltp"]
-        
-        # Calculate PCR
-        if total_ce > 0:
-            pcr_value = total_pe / total_ce
-        else:
-            pcr_value = 1.0  # Default neutral value if no CE data
-        
-        # Update PCR data
-        pcr_data[symbol]["current"] = pcr_value
-        pcr_data[symbol]["history"].append(pcr_value)
-        pcr_data[symbol]["last_updated"] = datetime.now()
-        
-        # Update trend and strength
-        determine_pcr_trend(symbol)
-        calculate_pcr_strength(symbol)
-        
-        logger.debug(f"Updated PCR for {symbol}: {pcr_value:.2f}")
-    
-    # Add some default PCR values for indices if not already present
-    default_pcrs = {
-        "NIFTY": 1.04,
-        "BANKNIFTY": 0.95,
-        "FINNIFTY": 1.02
-    }
-    
-    for idx, val in default_pcrs.items():
-        if idx not in pcr_data:
-            pcr_data[idx] = {
-                "current": val,
-                "history": deque([val] * 5, maxlen=PCR_HISTORY_LENGTH),
-                "trend": "NEUTRAL",
-                "strength": 0.0,
-                "last_updated": datetime.now()
-            }
-            
-            # Set trend and strength
-            determine_pcr_trend(idx)
-            calculate_pcr_strength(idx)
-            
-            logger.debug(f"Added default PCR for {idx}: {val:.2f}")
-
-def update_all_data():
-    """
-    Update all data in one go - stocks, options, PCR, and market sentiment
-    """
-    global broker_connected, smart_api
-    
-    # Skip if not connected to broker
-    if not broker_connected or smart_api is None:
-        logger.warning("Cannot update data: Not connected to broker")
-        return
-    
-    # Refresh session if needed
-    refresh_session_if_needed()
-    
-    try:
-        # Fetch all data in bulk
-        logger.info("Starting bulk data fetch...")
-        start_time = time.time()
-        
-        # Fetch bulk data
-        bulk_results = fetch_bulk_data()
-        
-        if bulk_results:
-            # Update all data structures from bulk results
-            update_data_from_bulk_results(bulk_results)
-            
-            # Update market sentiment based on all the data
-            update_market_sentiment()
-            
-            end_time = time.time()
-            logger.info(f"Bulk update completed in {end_time - start_time:.2f} seconds")
-        else:
-            logger.warning("Bulk data fetch returned no results")
-            
-    except Exception as e:
-        logger.error(f"Error in bulk data update: {e}", exc_info=True)
-
-# Replace the existing update functions with the new bulk approach
 def fetch_data_periodically():
     """Main function to fetch data periodically with smart retry logic."""
     global dashboard_initialized, data_thread_started, broker_error_message
@@ -6467,7 +4622,9 @@ def fetch_data_periodically():
     for stock in DEFAULT_STOCKS:
         add_stock(stock["symbol"], stock["token"], stock["exchange"], stock["type"])
         
-        # Removed historical data loading during initialization
+        # For NIFTY and BANKNIFTY, load historical data from CSV files
+        if stock["symbol"] in ["NIFTY", "BANKNIFTY"]:
+            load_historical_data(stock["symbol"])
     
     # Mark dashboard as initialized
     dashboard_initialized = True
@@ -6477,9 +4634,6 @@ def fetch_data_periodically():
     last_connection_attempt = datetime.now() - timedelta(minutes=10)  # Start with immediate connection attempt
     connection_retry_interval = 30  # Seconds between connection retries initially
     max_connection_retry_interval = 600  # Max 10 minutes between retries
-    
-    last_option_selection_check = datetime.now() - timedelta(seconds=OPTION_AUTO_SELECT_INTERVAL)
-    option_selection_interval = OPTION_AUTO_SELECT_INTERVAL  # Seconds between option selection checks
     
     # Main data fetching loop
     while True:
@@ -6505,16 +4659,20 @@ def fetch_data_periodically():
             
             # Try to use broker data if connected
             if broker_connected:
-                # Refresh session if needed
+               # Refresh session if needed
                 refresh_session_if_needed()
                 
-                # Update option selection periodically
-                if (current_time - last_option_selection_check).total_seconds() >= option_selection_interval:
-                    update_option_selection()
-                    last_option_selection_check = current_time
+                # Update all stocks using bulk API
+                update_all_stocks()
                 
-                # Update all data in a single bulk operation
-                update_all_data()
+                # Update option selection
+                update_option_selection()
+                
+                # Update all options using bulk API
+                update_all_options()
+                
+                # Update PCR data
+                update_all_pcr_data()
                 
                 # Update news data and check for news-based trading opportunities
                 if strategy_settings["NEWS_ENABLED"]:
@@ -6548,6 +4706,169 @@ def fetch_data_periodically():
             logger.error(f"Error in fetch_data_periodically: {e}", exc_info=True)
             time.sleep(1)
 
+def fetch_bulk_data():
+    """
+    Fetch all stock and option data in bulk using tokens from CSV
+    """
+    global smart_api, broker_connected, stocks_data, options_data
+    
+    if not broker_connected or smart_api is None:
+        logger.warning("Cannot fetch bulk data: Not connected to broker")
+        return {}
+    
+    # Refresh session if needed
+    refresh_session_if_needed()
+    
+    # Collect all symbols and tokens to fetch
+    symbols_to_fetch = {}  # {exchange: {symbol: token}}
+    
+    # Add stocks
+    for symbol, stock_info in stocks_data.items():
+        exchange = stock_info.get("exchange", "NSE")
+        token = stock_info.get("token")
+        
+        if token and symbol:
+            if exchange not in symbols_to_fetch:
+                symbols_to_fetch[exchange] = {}
+            symbols_to_fetch[exchange][symbol] = token
+    
+    # Add options
+    for option_key, option_info in options_data.items():
+        # Skip options with fallback tokens
+        if option_info.get("is_fallback", False):
+            continue
+            
+        exchange = option_info.get("exchange", "NFO")
+        symbol = option_info.get("symbol")
+        token = option_info.get("token")
+        
+        if token and symbol:
+            if exchange not in symbols_to_fetch:
+                symbols_to_fetch[exchange] = {}
+            symbols_to_fetch[exchange][symbol] = token
+    
+    # Fetch data in batches by exchange
+    all_results = {}
+    
+    for exchange, symbols in symbols_to_fetch.items():
+        # Process in batches of BULK_FETCH_SIZE
+        symbol_items = list(symbols.items())
+        
+        for i in range(0, len(symbol_items), BULK_FETCH_SIZE):
+            batch = symbol_items[i:i+BULK_FETCH_SIZE]
+            batch_symbols = {s: t for s, t in batch}
+            
+            # Make bulk requests
+            try:
+                logger.info(f"Making bulk LTP request for {len(batch_symbols)} symbols on {exchange}")
+                ltp_response = {}
+                
+                for symbol, token in batch_symbols.items():
+                    try:
+                        single_resp = smart_api.ltpData(exchange, symbol, token)
+                        if isinstance(single_resp, dict) and single_resp.get("status"):
+                            ltp_response[symbol] = single_resp.get("data", {})
+                        
+                        # Small delay to avoid rate limiting
+                        time.sleep(0.1)
+                    except Exception as e:
+                        logger.error(f"Error fetching data for {symbol}: {e}")
+                
+                # Process the response
+                for symbol, data in ltp_response.items():
+                    all_results[f"{exchange}:{symbol}"] = {
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "ltp": float(data.get("ltp", 0) or 0),
+                        "open": float(data.get("open", 0) or 0),
+                        "high": float(data.get("high", 0) or 0),
+                        "low": float(data.get("low", 0) or 0),
+                        "previous": float(data.get("previous", 0) or 0),
+                        "volume": data.get("tradingSymbol", 0),
+                        "timestamp": datetime.now()
+                    }
+            except Exception as e:
+                logger.error(f"Error in bulk fetch for {exchange}: {e}")
+            
+            # Small delay between batches
+            time.sleep(0.2)
+    
+    return all_results
+
+# Update option selection to use the new CSV-based functions
+def update_option_selection(force_update=False):
+    """
+    Update option selection for all stocks based on current prices
+    """
+    global stocks_data, last_option_selection_update
+    
+    current_time = datetime.now()
+    
+    # Only update periodically unless forced
+    if not force_update and (current_time - last_option_selection_update).total_seconds() < OPTION_AUTO_SELECT_INTERVAL:
+        return
+    
+    logger.info("Updating option selection based on current stock prices")
+    
+    # Process each stock
+    for symbol, stock_info in stocks_data.items():
+        current_price = stock_info.get("ltp")
+        
+        if current_price is None or current_price <= 0:
+            logger.warning(f"Skipping option selection for {symbol}: Invalid price {current_price}")
+            continue
+            
+        # Check if we need new options
+        need_new_options = False
+        
+        # Check current primary options
+        primary_ce = stock_info.get("primary_ce")
+        primary_pe = stock_info.get("primary_pe")
+        
+        if primary_ce is None or primary_pe is None:
+            need_new_options = True
+            logger.info(f"Missing primary options for {symbol}")
+        elif primary_ce in options_data and primary_pe in options_data:
+            # Check if current options are still ATM
+            ce_strike = float(options_data[primary_ce].get("strike", 0))
+            pe_strike = float(options_data[primary_pe].get("strike", 0))
+            
+            # Calculate appropriate strike interval
+            if current_price < 100:
+                strike_interval = 5
+            elif current_price < 1000:
+                strike_interval = 10
+            elif current_price < 10000:
+                strike_interval = 50
+            else:
+                strike_interval = 100
+            
+            # Check if strikes are still close to current price
+            ce_distance = abs(current_price - ce_strike)
+            pe_distance = abs(current_price - pe_strike)
+            
+            if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
+                need_new_options = True
+                logger.info(f"Options for {symbol} too far from current price (CE distance: {ce_distance:.2f}, PE distance: {pe_distance:.2f})")
+            
+            # Check if options are using fallback data
+            elif any(options_data[opt].get("using_fallback", False) for opt in [primary_ce, primary_pe]):
+                need_new_options = True
+                logger.info(f"Options for {symbol} are using fallback data, finding better options")
+        else:
+            need_new_options = True
+            logger.info(f"Options data missing for {symbol}")
+        
+        # Get new options if needed
+        if need_new_options:
+            find_and_add_atm_options(symbol, current_price)
+    
+    # Update timestamp
+    last_option_selection_update = current_time
+
+
+# ============ Dashboard UI ============
+# Define a modern color scheme for the dashboard
 # ============ Dashboard UI ============
 # Define a modern color scheme for the dashboard
 COLOR_SCHEME = {
@@ -6569,56 +4890,51 @@ COLOR_SCHEME = {
 # Define custom CSS for smooth transitions and animations
 # Find the app_css definition in your code and replace it with this enhanced version:
 app_css = '''
-/* Base transitions for all updating elements */
-.smooth-transition {
-    transition: all 0.7s ease-in-out;
+/* Base transitions */
+.dynamic-update {
+    transition: all 0.3s ease-in-out !important;
 }
 
-/* Specifically for price changes */
-.price-change, [id*="price"], [id*="change"] {
-    transition: all 0.5s ease;
-    transition-delay: 0.1s;
+/* Price updates */
+.price-element {
+    transition: color 0.3s ease, background-color 0.3s ease !important;
 }
 
-/* For numeric values that change frequently */
-.numeric-value {
-    transition: color 0.7s ease-in-out, 
-                background-color 0.7s ease-in-out;
+/* Badge transitions */
+.badge-transition {
+    transition: background-color 0.3s ease, color 0.3s ease !important;
 }
 
-/* For badges that change state */
-.badge {
-    transition: background-color 0.5s ease-in-out, 
-                color 0.5s ease-in-out;
+/* Hardware acceleration to prevent flickering */
+.no-flicker {
+    transform: translateZ(0);
+    backface-visibility: hidden;
 }
 
-/* For progress bars */
+/* Smooth progress bar updates */
 .progress-bar {
-    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.3s ease-in-out !important;
 }
 
-/* For cards and containers */
-.card, .card-body {
-    transition: border-color 0.5s ease-in-out;
+/* Value updates */
+.value-update {
+    transition: opacity 0.3s, transform 0.3s, color 0.3s;
 }
 
-/* Brief highlight effect for significant changes */
-@keyframes highlight-green {
-    0% { background-color: rgba(40, 167, 69, 0.3); }
-    100% { background-color: transparent; }
+/* Card updates */
+.card-update {
+    transition: border-color 0.3s ease-in-out;
 }
 
-@keyframes highlight-red {
-    0% { background-color: rgba(220, 53, 69, 0.3); }
-    100% { background-color: transparent; }
+/* Remove blinking animations */
+.highlight-positive, .highlight-negative {
+    animation: none !important;
+    transition: background-color 0.3s ease-in-out;
 }
 
-.highlight-positive {
-    animation: highlight-green 1.5s ease-out;
-}
-
-.highlight-negative {
-    animation: highlight-red 1.5s ease-out;
+/* Color transitions */
+.color-transition {
+    transition: color 0.3s ease-in-out;
 }
 '''
 
@@ -6822,11 +5138,11 @@ def create_stock_option_card(symbol):
                 dbc.Col([
                     html.Div([
                         html.Span("Price: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-price", "index": symbol}, className="fs-4 text-light smooth-transition price-change")
+                        html.Span(id={"type": "stock-price", "index": symbol}, className="fs-4 text-light dynamic-update price-element")
                     ], className="mb-2"),
                     html.Div([
                         html.Span("Change: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-change", "index": symbol}, className="text-light smooth-transition price-change")
+                        html.Span(id={"type": "stock-change", "index": symbol}, className="text-light dynamic-update price-element")
                     ], className="mb-1"),
                     html.Div([
                         html.Span("OHLC: ", className="text-muted me-2"),
@@ -6867,7 +5183,7 @@ def create_stock_option_card(symbol):
                     ], className="text-center mb-1"),
                     html.Div([
                         html.Span("LTP: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-ce-price", "index": symbol}, className="fs-5 fw-bold smooth-transition price-change")
+                        html.Span(id={"type": "option-ce-price", "index": symbol}, className="fs-5 fw-bold dynamic-update price-element")
                     ], className="text-center mb-2"),
                     html.Div([
                         html.Span("Signal: ", className="text-muted me-1"),
@@ -6886,7 +5202,7 @@ def create_stock_option_card(symbol):
                     ], className="text-center mb-1"),
                     html.Div([
                         html.Span("LTP: ", className="text-muted me-1"),
-                        html.Span(id={"type": "option-pe-price", "index": symbol}, className="fs-5 fw-bold smooth-transition price-change")
+                        html.Span(id={"type": "option-pe-price", "index": symbol}, className="fs-5 fw-bold dynamic-update price-element")
                     ], className="text-center mb-2"),
                     html.Div([
                         html.Span("Signal: ", className="text-muted me-1"),
@@ -7213,20 +5529,90 @@ app.layout = create_layout()
 
 
 # ============ Dashboard Callbacks ============
-# Update UI Data Store to centralize data processing
+def update_value_store():
+    """Update the central value store with current data"""
+    global value_store
+    
+    # Update stock values
+    for symbol, stock_info in stocks_data.items():
+        if symbol not in value_store['stocks']:
+            value_store['stocks'][symbol] = {}
+        
+        value_store['stocks'][symbol].update({
+            'price': stock_info.get('ltp', 0),
+            'change': stock_info.get('change_percent', 0),
+            'pcr': pcr_data.get(symbol, {}).get('current', 1.0),
+            'sentiment': market_sentiment.get(symbol, 'NEUTRAL'),
+            'last_update': stock_info.get('last_updated')
+        })
+    
+    # Update option values
+    for option_key, option_info in options_data.items():
+        if option_key not in value_store['options']:
+            value_store['options'][option_key] = {}
+            
+        value_store['options'][option_key].update({
+            'price': option_info.get('ltp', 0),
+            'signal': option_info.get('signal', 0),
+            'strength': option_info.get('strength', 0),
+            'trend': option_info.get('trend', 'NEUTRAL')
+        })
+    
+    # Update performance values
+    value_store['performance'].update({
+        'total_pnl': trading_state.total_pnl,
+        'daily_pnl': trading_state.daily_pnl,
+        'win_rate': (trading_state.wins / (trading_state.wins + trading_state.losses) * 100) if (trading_state.wins + trading_state.losses) > 0 else 0,
+        'trades_today': trading_state.trades_today
+    })
+
+def throttle_ui_updates(current_data, previous_data, key, throttle_fields=None):
+    """
+    Throttle UI updates to reduce blinking by only updating changed values
+    
+    Args:
+        current_data (dict): Current data
+        previous_data (dict): Previous data
+        key (str): Key to check
+        throttle_fields (list): List of fields to throttle updates for
+        
+    Returns:
+        dict: Throttled data
+    """
+    if throttle_fields is None:
+        throttle_fields = ['price', 'ltp', 'change']
+        
+    if key not in current_data or key not in previous_data:
+        return current_data[key] if key in current_data else {}
+    
+    # Start with current data
+    result = current_data[key].copy()
+    
+    # Check each throttle field
+    for field in throttle_fields:
+        if field in current_data[key] and field in previous_data[key]:
+            current_value = current_data[key][field]
+            previous_value = previous_data[key][field]
+            
+            # Only update if significant change (more than 0.1%)
+            if isinstance(current_value, (int, float)) and isinstance(previous_value, (int, float)):
+                # For prices, only update if change is greater than minimum threshold
+                if abs(current_value - previous_value) < (previous_value * 0.001):
+                    result[field] = previous_value
+    
+    return result
+
+# Update UI Data Store to reduce blinking
 @app.callback(
     Output('ui-data-store', 'data'),
-    [Input('fast-interval', 'n_intervals')]
+    [Input('fast-interval', 'n_intervals')],
+    [State('ui-data-store', 'data')]
 )
-def update_ui_data_store(n_intervals):
+def update_ui_data_store(n_intervals, previous_data):
     """Centralized data store updates with throttling to avoid UI blinking"""
-    # Create a static copy of current UI data store to avoid reference issues
-    current_ui_data = {}
-    for key in ui_data_store:
-        if isinstance(ui_data_store[key], dict):
-            current_ui_data[key] = ui_data_store[key].copy()
-        else:
-            current_ui_data[key] = ui_data_store[key]
+    # If no previous data, create empty dictionary
+    if previous_data is None:
+        previous_data = {}
     
     # Create result dictionary
     result = {
@@ -7239,8 +5625,8 @@ def update_ui_data_store(n_intervals):
         'options': {},
         'pcr': {},
         'sentiment': market_sentiment.copy(),
-        'predicted_strategies': current_ui_data.get('predicted_strategies', {}),
-        'news': current_ui_data.get('news', {}),
+        'predicted_strategies': previous_data.get('predicted_strategies', {}),
+        'news': previous_data.get('news', {}),
         'trading': {
             'active_trades': sum(1 for v in trading_state.active_trades.values() if v),
             'total_pnl': trading_state.total_pnl,
@@ -7252,27 +5638,43 @@ def update_ui_data_store(n_intervals):
         'strategies': strategy_settings.copy()
     }
     
-    # Process stock data with change detection
+    # Process stock data with reduced update frequency
     for symbol in stocks_data:
         stock_info = stocks_data[symbol]
-        current_stock_data = current_ui_data.get('stocks', {}).get(symbol, {})
         
         # Get current values
         ltp = stock_info.get("ltp")
         last_updated = stock_info.get("last_updated")
         last_updated_str = last_updated.strftime('%H:%M:%S') if last_updated else 'N/A'
         
-        # Check if data has actually changed
-        prev_price = current_stock_data.get('price')
-        if prev_price == ltp and current_stock_data.get('last_updated') == last_updated_str:
-            # No change detected, keep previous data to avoid UI updates
-            result['stocks'][symbol] = current_stock_data
-            continue
+        # Check against previous data
+        prev_data = previous_data.get('stocks', {}).get(symbol, {})
+        prev_price = prev_data.get('price')
+        prev_update = prev_data.get('last_updated')
+        
+        # Determine if we need to force an update
+        force_update = (prev_update != last_updated_str)
+        
+        # Calculate change direction for highlighting
+        change_direction = 'none'
+        if prev_price is not None and ltp is not None and ltp != prev_price:
+            change_direction = 'up' if ltp > prev_price else 'down'
             
-        # Data has changed, include in update
-        result['stocks'][symbol] = {
+        # Calculate percentage change
+        if ltp is not None and ltp > 0:
+            # Calculate from previous close or opening price
+            previous = stock_info.get("previous") or stock_info.get("open") or ltp
+            if previous > 0:
+                change_percent = ((ltp - previous) / previous) * 100
+            else:
+                change_percent = 0
+        else:
+            change_percent = 0
+        
+        # Create stock data entry
+        stock_data = {
             'price': ltp,
-            'change': stock_info.get("change_percent", 0),
+            'change': change_percent,
             'ohlc': {
                 'open': stock_info.get("open"),
                 'high': stock_info.get("high"),
@@ -7280,83 +5682,188 @@ def update_ui_data_store(n_intervals):
                 'previous': stock_info.get("previous")
             },
             'last_updated': last_updated_str,
-            'has_changed': True if prev_price is not None and ltp != prev_price else False,
-            'change_direction': 'up' if prev_price is not None and ltp > prev_price else 
-                               'down' if prev_price is not None and ltp < prev_price else 'none'
+            'has_changed': force_update or (prev_price is not None and ltp != prev_price),
+            'change_direction': change_direction
         }
+        
+        # Apply throttling to reduce updates
+        if not force_update and 'stocks' in previous_data and symbol in previous_data['stocks']:
+            # Only update price if it has changed significantly
+            if ltp is not None and prev_price is not None:
+                # Calculate percentage difference
+                price_diff_pct = abs(ltp - prev_price) / max(ltp, prev_price) * 100
+                
+                # If difference is tiny, keep previous price to avoid blinking
+                if price_diff_pct < 0.01:  # Less than 0.01% change
+                    stock_data['price'] = prev_price
+                    stock_data['has_changed'] = False
+                    stock_data['change_direction'] = 'none'
+                
+                # Only update OHLC data when necessary
+                if price_diff_pct < 0.05:  # Less than 0.05% change
+                    stock_data['ohlc'] = prev_data.get('ohlc', stock_data['ohlc'])
+                    
+                # Keep previous change value for small changes
+                prev_change = prev_data.get('change')
+                if prev_change is not None and abs(change_percent - prev_change) < 0.01:
+                    stock_data['change'] = prev_change
+        
+        # Store the data
+        result['stocks'][symbol] = stock_data
     
     # Process option data with change detection
     for symbol in stocks_data:
         result['options'][symbol] = {}
-        current_option_data = current_ui_data.get('options', {}).get(symbol, {})
+        prev_option_data = previous_data.get('options', {}).get(symbol, {})
         
         # Process CE options
         ce_key = stocks_data[symbol].get("primary_ce")
         if ce_key and ce_key in options_data:
             ce_option = options_data[ce_key]
-            current_ce = current_option_data.get('ce', {})
             
             # Get current values
             ce_price = ce_option.get("ltp")
             
-            # Check if price has changed
-            prev_ce_price = current_ce.get('price')
-            if prev_ce_price == ce_price:
-                # No change, keep previous data
-                result['options'][symbol]['ce'] = current_ce
-            else:
-                # Price changed, update data
-                result['options'][symbol]['ce'] = {
-                    'strike': ce_option.get("strike", "N/A"),
-                    'price': ce_price,
-                    'signal': ce_option.get("signal", 0),
-                    'strength': ce_option.get("strength", 0),
-                    'trend': ce_option.get("trend", "NEUTRAL"),
-                    'using_fallback': ce_option.get("using_fallback", False),
-                    'has_changed': True if prev_ce_price is not None else False,
-                    'change_direction': 'up' if prev_ce_price is not None and ce_price > prev_ce_price else 
-                                       'down' if prev_ce_price is not None and ce_price < prev_ce_price else 'none'
-                }
+            # Get previous values
+            prev_ce = prev_option_data.get('ce', {})
+            prev_ce_price = prev_ce.get('price')
+            
+            # Determine change direction
+            change_direction = 'none'
+            if prev_ce_price is not None and ce_price is not None and ce_price != prev_ce_price:
+                change_direction = 'up' if ce_price > prev_ce_price else 'down'
+                
+            # Create option data
+            ce_data = {
+                'strike': ce_option.get("strike", "N/A"),
+                'price': ce_price,
+                'signal': ce_option.get("signal", 0),
+                'strength': ce_option.get("strength", 0),
+                'trend': ce_option.get("trend", "NEUTRAL"),
+                'using_fallback': ce_option.get("using_fallback", False),
+                'has_changed': prev_ce_price is not None and ce_price != prev_ce_price,
+                'change_direction': change_direction
+            }
+            
+            # Apply throttling
+            if prev_ce_price is not None and ce_price is not None:
+                # Calculate percentage difference
+                price_diff_pct = abs(ce_price - prev_ce_price) / max(ce_price, prev_ce_price) * 100
+                
+                # If difference is tiny, keep previous price to avoid blinking
+                if price_diff_pct < 0.01:  # Less than 0.01% change
+                    ce_data['price'] = prev_ce_price
+                    ce_data['has_changed'] = False
+                    ce_data['change_direction'] = 'none'
+                
+                # Keep previous signal/trend values for small price changes
+                if price_diff_pct < 0.1:  # Less than 0.1% change
+                    ce_data['signal'] = prev_ce.get('signal', ce_data['signal'])
+                    ce_data['strength'] = prev_ce.get('strength', ce_data['strength'])
+                    ce_data['trend'] = prev_ce.get('trend', ce_data['trend'])
+            
+            result['options'][symbol]['ce'] = ce_data
+        elif 'ce' in prev_option_data:
+            # Keep previous data if no current data
+            result['options'][symbol]['ce'] = prev_option_data['ce']
         
-        # Process PE options (same logic as CE)
+        # Process PE options (similar logic to CE)
         pe_key = stocks_data[symbol].get("primary_pe")
         if pe_key and pe_key in options_data:
             pe_option = options_data[pe_key]
-            current_pe = current_option_data.get('pe', {})
             
             # Get current values
             pe_price = pe_option.get("ltp")
             
-            # Check if price has changed
-            prev_pe_price = current_pe.get('price')
-            if prev_pe_price == pe_price:
-                # No change, keep previous data
-                result['options'][symbol]['pe'] = current_pe
-            else:
-                # Price changed, update data
-                result['options'][symbol]['pe'] = {
-                    'strike': pe_option.get("strike", "N/A"),
-                    'price': pe_price,
-                    'signal': pe_option.get("signal", 0),
-                    'strength': pe_option.get("strength", 0),
-                    'trend': pe_option.get("trend", "NEUTRAL"),
-                    'using_fallback': pe_option.get("using_fallback", False),
-                    'has_changed': True if prev_pe_price is not None else False,
-                    'change_direction': 'up' if prev_pe_price is not None and pe_price > prev_pe_price else 
-                                       'down' if prev_pe_price is not None and pe_price < prev_pe_price else 'none'
-                }
+            # Get previous values
+            prev_pe = prev_option_data.get('pe', {})
+            prev_pe_price = prev_pe.get('price')
+            
+            # Determine change direction
+            change_direction = 'none'
+            if prev_pe_price is not None and pe_price is not None and pe_price != prev_pe_price:
+                change_direction = 'up' if pe_price > prev_pe_price else 'down'
+                
+            # Create option data
+            pe_data = {
+                'strike': pe_option.get("strike", "N/A"),
+                'price': pe_price,
+                'signal': pe_option.get("signal", 0),
+                'strength': pe_option.get("strength", 0),
+                'trend': pe_option.get("trend", "NEUTRAL"),
+                'using_fallback': pe_option.get("using_fallback", False),
+                'has_changed': prev_pe_price is not None and pe_price != prev_pe_price,
+                'change_direction': change_direction
+            }
+            
+            # Apply throttling
+            if prev_pe_price is not None and pe_price is not None:
+                # Calculate percentage difference
+                price_diff_pct = abs(pe_price - prev_pe_price) / max(pe_price, prev_pe_price) * 100
+                
+                # If difference is tiny, keep previous price to avoid blinking
+                if price_diff_pct < 0.01:  # Less than 0.01% change
+                    pe_data['price'] = prev_pe_price
+                    pe_data['has_changed'] = False
+                    pe_data['change_direction'] = 'none'
+                
+                # Keep previous signal/trend values for small price changes
+                if price_diff_pct < 0.1:  # Less than 0.1% change
+                    pe_data['signal'] = prev_pe.get('signal', pe_data['signal'])
+                    pe_data['strength'] = prev_pe.get('strength', pe_data['strength'])
+                    pe_data['trend'] = prev_pe.get('trend', pe_data['trend'])
+            
+            result['options'][symbol]['pe'] = pe_data
+        elif 'pe' in prev_option_data:
+            # Keep previous data if no current data
+            result['options'][symbol]['pe'] = prev_option_data['pe']
     
-    # Process PCR data (simplified)
+    # Process PCR data with stability
     for symbol, data in pcr_data.items():
         if symbol in stocks_data:
-            result['pcr'][symbol] = {
+            # Get current PCR data
+            current_pcr = {
                 'current': data['current'],
                 'trend': data['trend'],
                 'strength': data['strength']
             }
+            
+            # Get previous PCR data
+            prev_pcr = previous_data.get('pcr', {}).get(symbol, {})
+            
+            # Apply throttling for stability
+            if prev_pcr:
+                # Only update if significant change or trend change
+                if (abs(current_pcr['current'] - prev_pcr.get('current', 0)) < 0.01 and
+                    current_pcr['trend'] == prev_pcr.get('trend')):
+                    current_pcr = prev_pcr
+            
+            result['pcr'][symbol] = current_pcr
+    
+    # Apply throttling to predicted strategies to reduce updates
+    for symbol, strategy_data in stocks_data.items():
+        predicted = strategy_data.get("predicted_strategy")
+        confidence = strategy_data.get("strategy_confidence", 0)
+        
+        if predicted and confidence > 0:
+            prev_strategy = previous_data.get('predicted_strategies', {}).get(symbol, {})
+            
+            # Only update if strategy or confidence changes significantly
+            if (prev_strategy and
+                prev_strategy.get('strategy') == predicted and
+                abs(prev_strategy.get('confidence', 0) - confidence) < 0.05):
+                # Keep previous data
+                result['predicted_strategies'][symbol] = prev_strategy
+            else:
+                # Update with new data
+                result['predicted_strategies'][symbol] = {
+                    'strategy': predicted,
+                    'confidence': confidence
+                }
     
     return result
-# Connection status indicator callback
+    
+    
 @app.callback(
     [Output("broker-status", "children"),
      Output("broker-status", "className"),
@@ -7558,6 +6065,9 @@ def update_stock_cards(n_intervals, add_clicks, remove_clicks):
     prevent_initial_call=True
 )
 def add_stock_callback(n_clicks, symbol, stock_type):
+    """
+    Callback for adding a stock from CSV and finding its options
+    """
     if not symbol:
         return "Please enter a symbol", "text-danger mt-2", ""
     
@@ -7568,13 +6078,31 @@ def add_stock_callback(n_clicks, symbol, stock_type):
     if symbol in stocks_data:
         return f"{symbol} is already being tracked", "text-warning mt-2", ""
     
-    # Add stock
-    success = add_stock(symbol, None, "NSE", stock_type)
+    # Search for the stock in CSV
+    stock_data = search_stock_in_csv(symbol)
+    
+    if not stock_data:
+        return f"Could not find {symbol} in the CSV database", "text-danger mt-2", symbol
+    
+    # Add stock from CSV data
+    success = add_stock_from_csv_data(stock_data)
     
     if success:
-        # Attempt to load historical data automatically
-        load_historical_data(symbol, period="3mo")
-        return f"Added {symbol} successfully", "text-success mt-2", ""
+        # Fetch initial data to get the price
+        if broker_connected:
+            fetch_stock_data(symbol)
+        
+        # Find and add options if we have a price
+        current_price = stocks_data[symbol].get("ltp")
+        if current_price:
+            # Find ATM options
+            options_found = find_and_add_atm_options(symbol, current_price)
+            if options_found.get("CE") or options_found.get("PE"):
+                return f"Added {symbol} with options successfully", "text-success mt-2", ""
+            else:
+                return f"Added {symbol} (no options found)", "text-success mt-2", ""
+        else:
+            return f"Added {symbol} (waiting for price data)", "text-success mt-2", ""
     else:
         return f"Failed to add {symbol}", "text-danger mt-2", symbol
 
@@ -7700,6 +6228,43 @@ def update_strategy_settings(scalp_enabled, swing_enabled, momentum_enabled, new
     [State({"type": "data-source-badge", "index": ALL}, "id")]
 )
 def update_stocks_display(data, badge_ids):
+    """Update stock display using values from store"""
+    if not badge_ids:
+        return [], [], [], [], [], [], [], [], [], [], [], [], [], []
+        
+    outputs = []
+    for symbol in stocks_data:
+        stored_data = data['stocks'].get(symbol, {})
+        price = stored_data.get('price', 'N/A')
+        change = stored_data.get('change', 0)
+        
+        # Format price and change without causing UI flicker
+        outputs.append({
+            'price': f"₹{price:,.2f}" if isinstance(price, (int, float)) else "N/A",
+            'price_class': "fs-4 text-light dynamic-update price-element",
+            'change': f"{change:+.2f}%" if isinstance(change, (int, float)) else "N/A",
+            'change_class': "text-success" if change > 0 else "text-danger" if change < 0 else "text-light"
+        })
+    
+    # Create return lists for each output
+    data_sources = ["Real-time" for _ in badge_ids]
+    data_source_classes = ["badge bg-success" for _ in badge_ids]
+    prices = [o['price'] for o in outputs]
+    price_classes = [o['price_class'] for o in outputs]
+    changes = [o['change'] for o in outputs]
+    change_classes = [o['change_class'] for o in outputs]
+    ohlc = ["N/A" for _ in badge_ids]
+    pcr = ["N/A" for _ in badge_ids]
+    pcr_strength = ["" for _ in badge_ids]
+    sentiments = ["NEUTRAL" for _ in badge_ids]
+    sentiment_classes = ["badge bg-secondary" for _ in badge_ids]
+    sr_levels = ["" for _ in badge_ids]
+    last_updates = ["" for _ in badge_ids]
+    predictions = ["" for _ in badge_ids]
+    
+    return (data_sources, data_source_classes, prices, price_classes, 
+            changes, change_classes, ohlc, pcr, pcr_strength, sentiments, 
+            sentiment_classes, sr_levels, last_updates, predictions)
     if not data:
         # Return placeholders if no data
         empty_result = [
