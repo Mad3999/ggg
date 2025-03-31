@@ -1147,9 +1147,186 @@ def add_stock(symbol, token=None, exchange="NSE", stock_type="STOCK", with_optio
     
     return True
 
+# Add the missing update_all_data_comprehensive function
+def update_all_data_comprehensive():
+    """
+    Comprehensive update of all data (stocks, options, PCR) in a single function
+    with optimized API calls
+    """
+    global stocks_data, options_data, pcr_data, broker_connected, smart_api
+    
+    if not broker_connected or smart_api is None:
+        logger.warning("Cannot update data: Not connected to broker")
+        return
+    
+    # Refresh session if needed
+    refresh_session_if_needed()
+    
+    # Get all symbols to update
+    symbols_to_update = list(stocks_data.keys())
+    
+    # Track which stocks have active trades for prioritization
+    active_trade_symbols = set()
+    for option_key, is_active in trading_state.active_trades.items():
+        if is_active and option_key in options_data:
+            parent_symbol = options_data[option_key].get("parent_symbol")
+            if parent_symbol:
+                active_trade_symbols.add(parent_symbol)
+    
+    # Prioritize stocks with active trades
+    prioritized_symbols = list(active_trade_symbols) + [s for s in symbols_to_update if s not in active_trade_symbols]
+    
+    # Process in batches to respect API limits
+    for i in range(0, len(prioritized_symbols), BULK_FETCH_SIZE):
+        batch = prioritized_symbols[i:i+BULK_FETCH_SIZE]
+        
+        # Fetch comprehensive data for this batch
+        all_data = fetch_bulk_data_comprehensive(batch)
+        
+        # Process stock data
+        for symbol, data in all_data.get("stocks", {}).items():
+            if symbol in stocks_data:
+                stock_info = stocks_data[symbol]
+                
+                # Update with fetched data
+                previous_ltp = stock_info["ltp"]
+                stock_info["ltp"] = data.get("ltp")
+                stock_info["open"] = data.get("open")
+                stock_info["high"] = data.get("high") 
+                stock_info["low"] = data.get("low")
+                stock_info["previous"] = data.get("previous")
+                
+                # Calculate movement percentage
+                if previous_ltp is not None and previous_ltp > 0:
+                    stock_info["movement_pct"] = ((data.get("ltp", 0) - previous_ltp) / previous_ltp) * 100
+                
+                # Calculate change percentage
+                if stock_info["open"] and stock_info["open"] > 0:
+                    stock_info["change_percent"] = ((data.get("ltp", 0) - stock_info["open"]) / stock_info["open"]) * 100
+                
+                # Add to price history
+                timestamp = pd.Timestamp.now()
+                
+                new_data = {
+                    'timestamp': timestamp,
+                    'price': data.get("ltp", 0),
+                    'volume': data.get("volume", 0),
+                    'open': stock_info.get("open", data.get("ltp", 0)),
+                    'high': stock_info.get("high", data.get("ltp", 0)),
+                    'low': stock_info.get("low", data.get("ltp", 0))
+                }
+                
+                # Thread-safe price history update
+                with price_history_lock:
+                    stock_info["price_history"] = pd.concat([
+                        stock_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit price history size
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                
+                # Update volatility
+                if previous_ltp is not None and previous_ltp > 0:
+                    pct_change = (data.get("ltp", 0) - previous_ltp) / previous_ltp * 100
+                    update_volatility(symbol, pct_change)
+                
+                # Update last update time
+                stock_info["last_updated"] = datetime.now()
+                last_data_update["stocks"][symbol] = datetime.now()
+                
+                # Update UI data store
+                ui_data_store['stocks'][symbol] = {
+                    'price': data.get("ltp"),
+                    'change': stock_info["change_percent"],
+                    'ohlc': {
+                        'open': stock_info["open"],
+                        'high': stock_info["high"],
+                        'low': stock_info["low"],
+                        'previous': stock_info["previous"]
+                    },
+                    'last_updated': stock_info["last_updated"].strftime('%H:%M:%S')
+                }
+        
+        # Process option data
+        for option_key, data in all_data.get("options", {}).items():
+            if option_key in options_data:
+                option_info = options_data[option_key]
+                
+                # Update option data
+                previous_ltp = option_info["ltp"]
+                option_info["ltp"] = data.get("ltp")
+                option_info["open"] = data.get("open")
+                option_info["high"] = data.get("high")
+                option_info["low"] = data.get("low")
+                
+                # Calculate change percentage
+                if previous_ltp is not None and previous_ltp > 0:
+                    option_info["change_percent"] = ((data.get("ltp", 0) - previous_ltp) / previous_ltp) * 100
+                
+                # Add to price history
+                timestamp = pd.Timestamp.now()
+                
+                new_data = {
+                    'timestamp': timestamp,
+                    'price': data.get("ltp", 0),
+                    'volume': 0,
+                    'open_interest': 0,
+                    'change': option_info.get("change_percent", 0),
+                    'open': option_info["open"],
+                    'high': option_info["high"],
+                    'low': option_info["low"],
+                    'is_fallback': False
+                }
+                
+                # Thread-safe price history update
+                with price_history_lock:
+                    # Ensure all columns exist
+                    for col in new_data.keys():
+                        if col not in option_info["price_history"].columns:
+                            option_info["price_history"][col] = np.nan
+                    
+                    option_info["price_history"] = pd.concat([
+                        option_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit history size
+                    if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                
+                # Generate signals
+                generate_option_signals(option_key)
+                
+                # Update last update time
+                option_info["last_updated"] = datetime.now()
+                last_data_update["options"][option_key] = datetime.now()
+        
+        # Process PCR data
+        for symbol, data in all_data.get("pcr", {}).items():
+            if symbol in pcr_data:
+                pcr_data[symbol]["current"] = data.get("current", 1.0)
+                pcr_data[symbol]["history"].append(data.get("current", 1.0))
+                pcr_data[symbol]["trend"] = data.get("trend", "NEUTRAL")
+                pcr_data[symbol]["strength"] = data.get("strength", 0.0)
+                pcr_data[symbol]["last_updated"] = datetime.now()
+        
+        # Short delay between batch requests
+        time.sleep(0.05)
+
+# Fix thread safety issues with a more comprehensive locking mechanism
+# Add global locks for key data structures
+stocks_data_lock = threading.Lock()
+options_data_lock = threading.Lock()
+trading_state_lock = threading.Lock()
+pcr_data_lock = threading.Lock()
+ui_data_store_lock = threading.Lock()
+
+# Modify the fetch_stock_data function for thread safety
 def fetch_stock_data(symbol):
     """
-    Fetch data for a single stock directly
+    Fetch data for a single stock directly with improved thread safety
     
     Args:
         symbol (str): Stock symbol to fetch data for
@@ -1160,8 +1337,13 @@ def fetch_stock_data(symbol):
     global smart_api, broker_connected, stocks_data
     
     # Validate input
-    if not symbol or symbol not in stocks_data:
+    if not symbol:
         return False
+        
+    # Check if symbol exists with thread safety
+    with stocks_data_lock:
+        if symbol not in stocks_data:
+            return False
     
     # Ensure broker connection
     if not broker_connected or smart_api is None:
@@ -1173,10 +1355,11 @@ def fetch_stock_data(symbol):
     refresh_session_if_needed()
     
     try:
-        # Retrieve stock details
-        stock_info = stocks_data[symbol]
-        token = stock_info.get("token")
-        exchange = stock_info.get("exchange")
+        # Get stock info with thread safety
+        with stocks_data_lock:
+            stock_info = stocks_data[symbol]
+            token = stock_info.get("token")
+            exchange = stock_info.get("exchange")
         
         # Validate token and exchange
         if not token or not exchange:
@@ -1206,23 +1389,28 @@ def fetch_stock_data(symbol):
             low_price = max(low_price, 0.01)
             previous_price = max(previous_price, 0.01)
             
-            # Update stock data
-            previous_ltp = stock_info["ltp"]
-            stock_info["ltp"] = ltp
-            stock_info["open"] = open_price
-            stock_info["high"] = high_price
-            stock_info["low"] = low_price
-            stock_info["previous"] = previous_price
+            # Thread-safe update of stock data
+            with stocks_data_lock:
+                # Check if the symbol still exists in stocks_data (it could have been removed)
+                if symbol not in stocks_data:
+                    return False
+                    
+                previous_ltp = stock_info["ltp"]
+                stock_info["ltp"] = ltp
+                stock_info["open"] = open_price
+                stock_info["high"] = high_price
+                stock_info["low"] = low_price
+                stock_info["previous"] = previous_price
+                
+                # Calculate movement percentage
+                if previous_ltp is not None and previous_ltp > 0:
+                    stock_info["movement_pct"] = ((ltp - previous_ltp) / previous_ltp) * 100
+                
+                # Calculate change percentage
+                if open_price > 0:
+                    stock_info["change_percent"] = ((ltp - open_price) / open_price) * 100
             
-            # Calculate movement percentage
-            if previous_ltp is not None and previous_ltp > 0:
-                stock_info["movement_pct"] = ((ltp - previous_ltp) / previous_ltp) * 100
-            
-            # Calculate change percentage
-            if open_price > 0:
-                stock_info["change_percent"] = ((ltp - open_price) / open_price) * 100
-            
-            # Add to price history
+            # Add to price history with thread safety
             timestamp = pd.Timestamp.now()
             
             new_data = {
@@ -1234,44 +1422,62 @@ def fetch_stock_data(symbol):
                 'low': low_price
             }
             
-            # Append to price history DataFrame with proper index handling
+            # Thread-safe price history update
             with price_history_lock:
-                stock_info["price_history"] = pd.concat([
-                    stock_info["price_history"], 
-                    pd.DataFrame([new_data])
-                ], ignore_index=True)
-                
-                # Limit price history size
-                if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                    stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                with stocks_data_lock:
+                    # Check again if symbol exists (it could have been removed)
+                    if symbol not in stocks_data:
+                        return False
+                        
+                    stock_info["price_history"] = pd.concat([
+                        stock_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit price history size
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
             
-            # Update volatility
+            # Update volatility with thread safety
             if previous_ltp is not None and previous_ltp > 0:
                 pct_change = (ltp - previous_ltp) / previous_ltp * 100
                 update_volatility(symbol, pct_change)
             
-            # Update support/resistance levels (periodically to avoid excessive calculations)
-            if stock_info.get("last_sr_update") is None or \
-               (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
-                calculate_support_resistance(symbol)
-                stock_info["last_sr_update"] = datetime.now()
+            # Update support/resistance levels with thread safety (periodically to avoid excessive calculations)
+            with stocks_data_lock:
+                # Check again if symbol exists
+                if symbol not in stocks_data:
+                    return False
+                    
+                if stock_info.get("last_sr_update") is None or \
+                   (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
+                    calculate_support_resistance(symbol)
+                    stock_info["last_sr_update"] = datetime.now()
             
-            # Update last update time
-            stock_info["last_updated"] = datetime.now()
-            last_data_update["stocks"][symbol] = datetime.now()
+            # Thread-safe update of last update time and UI data store
+            with stocks_data_lock:
+                # Final check if symbol exists
+                if symbol not in stocks_data:
+                    return False
+                    
+                stock_info["last_updated"] = datetime.now()
+                
+            with ui_data_store_lock:
+                ui_data_store['stocks'][symbol] = {
+                    'price': ltp,
+                    'change': stock_info["change_percent"],
+                    'ohlc': {
+                        'open': open_price,
+                        'high': high_price,
+                        'low': low_price,
+                        'previous': previous_price
+                    },
+                    'last_updated': datetime.now().strftime('%H:%M:%S')
+                }
             
-            # Update UI data store
-            ui_data_store['stocks'][symbol] = {
-                'price': ltp,
-                'change': stock_info["change_percent"],
-                'ohlc': {
-                    'open': open_price,
-                    'high': high_price,
-                    'low': low_price,
-                    'previous': previous_price
-                },
-                'last_updated': stock_info["last_updated"].strftime('%H:%M:%S')
-            }
+            # Update last data update timestamp
+            with threading.Lock():
+                last_data_update["stocks"][symbol] = datetime.now()
             
             # Predict the most suitable strategy for this stock
             predict_strategy_for_stock(symbol)
@@ -1285,6 +1491,2261 @@ def fetch_stock_data(symbol):
     except Exception as e:
         logger.error(f"Error fetching data for {symbol}: {e}")
         return False
+
+# Fix callback function for PCR data
+@app.callback(
+    [Output({"type": "stock-pcr", "index": MATCH}, "children"),
+     Output({"type": "pcr-strength", "index": MATCH}, "children"),
+     Output({"type": "pcr-strength", "index": MATCH}, "className")],
+    [Input('medium-interval', 'n_intervals')],
+    [State({"type": "stock-pcr", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_pcr_data_display(n_intervals, id_dict, ui_data):
+    """Update PCR data display"""
+    if not ui_data or 'pcr' not in ui_data:
+        return "N/A", "", "text-muted"
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['pcr']:
+        return "N/A", "", "text-muted"
+    
+    pcr_info = ui_data['pcr'][symbol]
+    pcr_value = pcr_info.get('current', 1.0)
+    pcr_trend = pcr_info.get('trend', 'NEUTRAL')
+    pcr_strength = pcr_info.get('strength', 0.0)
+    
+    pcr_display = f"{pcr_value:.2f}"
+    
+    # Determine strength display and class
+    if pcr_trend == "RISING":
+        trend_text = "↑"
+        class_name = "text-danger"  # Rising PCR = bearish = red
+    elif pcr_trend == "FALLING":
+        trend_text = "↓"
+        class_name = "text-success"  # Falling PCR = bullish = green
+    else:
+        trend_text = "→"
+        class_name = "text-muted"
+    
+    strength_display = f"{trend_text} ({abs(pcr_strength):.2f})"
+    
+    return pcr_display, strength_display, class_name
+
+# Fix callback for sentiment data
+@app.callback(
+    [Output({"type": "stock-sentiment", "index": MATCH}, "children"),
+     Output({"type": "stock-sentiment", "index": MATCH}, "className")],
+    [Input('medium-interval', 'n_intervals')],
+    [State({"type": "stock-sentiment", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_sentiment_data(n_intervals, id_dict, ui_data):
+    """Update sentiment data display"""
+    if not ui_data or 'sentiment' not in ui_data:
+        return "NEUTRAL", "badge bg-secondary"
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['sentiment']:
+        return "NEUTRAL", "badge bg-secondary"
+    
+    sentiment = ui_data['sentiment'][symbol]
+    
+    # Determine badge class based on sentiment
+    if "STRONGLY BULLISH" in sentiment:
+        badge_class = "badge bg-success"
+    elif "BULLISH" in sentiment:
+        badge_class = "badge bg-success bg-opacity-75"
+    elif "MODERATELY BULLISH" in sentiment:
+        badge_class = "badge bg-success bg-opacity-50"
+    elif "STRONGLY BEARISH" in sentiment:
+        badge_class = "badge bg-danger"
+    elif "BEARISH" in sentiment:
+        badge_class = "badge bg-danger bg-opacity-75"
+    elif "MODERATELY BEARISH" in sentiment:
+        badge_class = "badge bg-danger bg-opacity-50"
+    else:
+        badge_class = "badge bg-secondary"
+    
+    return sentiment, badge_class
+
+
+# Optimize API usage by implementing a cache system
+class DataCache:
+    """
+    Cache for API data to reduce unnecessary API calls
+    """
+    def __init__(self, max_age_seconds=1):
+        self.cache = {}
+        self.max_age_seconds = max_age_seconds
+        self.lock = threading.Lock()
+    
+    def get(self, key):
+        """Get data from cache if fresh enough"""
+        with self.lock:
+            if key in self.cache:
+                data, timestamp = self.cache[key]
+                if (datetime.now() - timestamp).total_seconds() < self.max_age_seconds:
+                    return data
+        return None
+    
+    def set(self, key, data):
+        """Store data in cache with current timestamp"""
+        with self.lock:
+            self.cache[key] = (data, datetime.now())
+    
+    def clear(self, key=None):
+        """Clear specific key or entire cache"""
+        with self.lock:
+            if key:
+                if key in self.cache:
+                    del self.cache[key]
+            else:
+                self.cache.clear()
+    
+    def cleanup(self):
+        """Remove old entries from cache"""
+        current_time = datetime.now()
+        with self.lock:
+            keys_to_remove = []
+            for key, (data, timestamp) in self.cache.items():
+                if (current_time - timestamp).total_seconds() > self.max_age_seconds * 2:
+                    keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del self.cache[key]
+
+# Create global data cache
+api_data_cache = DataCache(max_age_seconds=1)  # 1-second cache for real-time data
+
+# Modify fetch_stock_data to use cache
+# Continuing with the fetch_stock_data_with_cache function
+def fetch_stock_data_with_cache(symbol):
+    """
+    Fetch data for a single stock with caching to reduce API calls
+    
+    Args:
+        symbol (str): Stock symbol to fetch data for
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    global smart_api, broker_connected, stocks_data, api_data_cache
+    
+    # Validate input
+    if not symbol or symbol not in stocks_data:
+        return False
+    
+    # Check cache first
+    cache_key = f"stock_{symbol}"
+    cached_data = api_data_cache.get(cache_key)
+    
+    if cached_data:
+        logger.debug(f"Using cached data for {symbol}")
+        
+        # Thread-safe update of stock data
+        with stocks_data_lock:
+            # Check if the symbol still exists in stocks_data
+            if symbol not in stocks_data:
+                return False
+                
+            stock_info = stocks_data[symbol]
+            previous_ltp = stock_info["ltp"]
+            
+            # Update with cached data
+            ltp = cached_data.get("ltp", 0)
+            stock_info["ltp"] = ltp
+            stock_info["open"] = cached_data.get("open", ltp)
+            stock_info["high"] = cached_data.get("high", ltp)
+            stock_info["low"] = cached_data.get("low", ltp)
+            stock_info["previous"] = cached_data.get("previous", ltp)
+            
+            # Calculate movement percentage
+            if previous_ltp is not None and previous_ltp > 0:
+                stock_info["movement_pct"] = ((ltp - previous_ltp) / previous_ltp) * 100
+            
+            # Calculate change percentage
+            if stock_info["open"] > 0:
+                stock_info["change_percent"] = ((ltp - stock_info["open"]) / stock_info["open"]) * 100
+        
+        return True
+    
+    # Ensure broker connection
+    if not broker_connected or smart_api is None:
+        if not connect_to_broker():
+            logger.warning(f"Cannot fetch data for {symbol}: Not connected to broker")
+            return False
+    
+    # Refresh session if needed
+    refresh_session_if_needed()
+    
+    try:
+        # Get stock info with thread safety
+        with stocks_data_lock:
+            if symbol not in stocks_data:
+                return False
+                
+            stock_info = stocks_data[symbol]
+            token = stock_info.get("token")
+            exchange = stock_info.get("exchange")
+        
+        # Validate token and exchange
+        if not token or not exchange:
+            logger.warning(f"Missing token or exchange for {symbol}")
+            return False
+        
+        # Fetch LTP data
+        ltp_resp = smart_api.ltpData(exchange, symbol, token)
+        
+        # Process successful response
+        if isinstance(ltp_resp, dict) and ltp_resp.get("status"):
+            data = ltp_resp.get("data", {})
+            
+            # Safely extract LTP with default
+            ltp = float(data.get("ltp", 0) or 0)
+            
+            # Use safe defaults for other fields
+            open_price = float(data.get("open", ltp) or ltp)
+            high_price = float(data.get("high", ltp) or ltp)
+            low_price = float(data.get("low", ltp) or ltp)
+            previous_price = float(data.get("previous", ltp) or ltp)
+            
+            # Ensure non-zero values
+            ltp = max(ltp, 0.01)
+            open_price = max(open_price, 0.01)
+            high_price = max(high_price, 0.01)
+            low_price = max(low_price, 0.01)
+            previous_price = max(previous_price, 0.01)
+            
+            # Cache the data for future use
+            api_data_cache.set(cache_key, {
+                "ltp": ltp,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "previous": previous_price,
+                "volume": data.get("tradingSymbol", 0)
+            })
+            
+            # Thread-safe update of stock data
+            with stocks_data_lock:
+                # Check if the symbol still exists in stocks_data
+                if symbol not in stocks_data:
+                    return False
+                    
+                previous_ltp = stock_info["ltp"]
+                stock_info["ltp"] = ltp
+                stock_info["open"] = open_price
+                stock_info["high"] = high_price
+                stock_info["low"] = low_price
+                stock_info["previous"] = previous_price
+                
+                # Calculate movement percentage
+                if previous_ltp is not None and previous_ltp > 0:
+                    stock_info["movement_pct"] = ((ltp - previous_ltp) / previous_ltp) * 100
+                
+                # Calculate change percentage
+                if open_price > 0:
+                    stock_info["change_percent"] = ((ltp - open_price) / open_price) * 100
+            
+            # Add to price history with thread safety
+            timestamp = pd.Timestamp.now()
+            
+            new_data = {
+                'timestamp': timestamp,
+                'price': ltp,
+                'volume': data.get("tradingSymbol", 0),
+                'open': open_price,
+                'high': high_price,
+                'low': low_price
+            }
+            
+            # Thread-safe price history update
+            with price_history_lock:
+                with stocks_data_lock:
+                    # Check again if symbol exists
+                    if symbol not in stocks_data:
+                        return False
+                        
+                    stock_info["price_history"] = pd.concat([
+                        stock_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit price history size
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+            
+            # Update volatility with thread safety
+            if previous_ltp is not None and previous_ltp > 0:
+                pct_change = (ltp - previous_ltp) / previous_ltp * 100
+                update_volatility(symbol, pct_change)
+            
+            # Update support/resistance levels periodically with thread safety
+            with stocks_data_lock:
+                # Check again if symbol exists
+                if symbol not in stocks_data:
+                    return False
+                    
+                if stock_info.get("last_sr_update") is None or \
+                   (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
+                    calculate_support_resistance(symbol)
+                    stock_info["last_sr_update"] = datetime.now()
+            
+            # Thread-safe update of last update time and UI data store
+            with stocks_data_lock:
+                # Final check if symbol exists
+                if symbol not in stocks_data:
+                    return False
+                    
+                stock_info["last_updated"] = datetime.now()
+                
+            with ui_data_store_lock:
+                ui_data_store['stocks'][symbol] = {
+                    'price': ltp,
+                    'change': stock_info["change_percent"],
+                    'ohlc': {
+                        'open': open_price,
+                        'high': high_price,
+                        'low': low_price,
+                        'previous': previous_price
+                    },
+                    'last_updated': datetime.now().strftime('%H:%M:%S')
+                }
+            
+            # Update last data update timestamp
+            with threading.Lock():
+                last_data_update["stocks"][symbol] = datetime.now()
+            
+            logger.info(f"Fetched real LTP for {symbol}: {ltp:.2f}")
+            return True
+        else:
+            logger.warning(f"Failed to fetch data for {symbol}: {ltp_resp}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error fetching data for {symbol}: {e}")
+        return False
+
+# Apply similar caching pattern to fetch_option_data
+def fetch_option_data_with_cache(option_key):
+    """
+    Fetch data for a single option with caching to reduce API calls
+    
+    Args:
+        option_key (str): Option key to fetch data for
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    global options_data, broker_connected, smart_api, api_data_cache
+    
+    if option_key not in options_data:
+        logger.warning(f"Cannot fetch data for unknown option key: {option_key}")
+        return False
+    
+    option_info = options_data[option_key]
+    
+    # Skip if not connected to broker
+    if not broker_connected:
+        logger.warning(f"Broker not connected, skipping update for {option_key}")
+        return False
+    
+    # Check cache first
+    cache_key = f"option_{option_key}"
+    cached_data = api_data_cache.get(cache_key)
+    
+    if cached_data:
+        logger.debug(f"Using cached data for option {option_key}")
+        
+        # Thread-safe update of option data
+        with options_data_lock:
+            # Check if option still exists
+            if option_key not in options_data:
+                return False
+                
+            previous_price = option_info.get("ltp")
+            
+            # Update with cached data
+            ltp = cached_data.get("ltp", 0)
+            option_info["ltp"] = ltp
+            option_info["open"] = cached_data.get("open", ltp)
+            option_info["high"] = cached_data.get("high", ltp)
+            option_info["low"] = cached_data.get("low", ltp)
+            
+            # Calculate change percentage
+            if previous_price is not None and previous_price > 0:
+                option_info["change_percent"] = ((ltp - previous_price) / previous_price) * 100
+                
+            # Update last update time
+            option_info["last_updated"] = datetime.now()
+            
+            # Generate signals
+            generate_option_signals(option_key)
+        
+        return True
+    
+    # Rest of the original fetch_option_data function...
+    # (Add caching before returning success)
+
+# Improve WebSocket handling for real-time data
+def setup_websocket_connection():
+    """
+    Set up WebSocket connection for real-time market data
+    """
+    global smart_api, broker_connected
+    
+    if not broker_connected or smart_api is None:
+        logger.warning("Cannot set up WebSocket: Not connected to broker")
+        return False
+    
+    try:
+        # Create WebSocket client
+        from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+        
+        # Get the auth token and feed token
+        session_details = smart_api.getSessionID()
+        
+        if isinstance(session_details, dict) and session_details.get("status"):
+            auth_token = smart_api.session_token
+            feed_token = session_details.get("data", {}).get("feedToken")
+            client_code = config.username
+            
+            if auth_token and feed_token and client_code:
+                # Initialize WebSocket
+                ws_client = SmartWebSocketV2(auth_token=auth_token, feed_token=feed_token, client_code=client_code)
+                
+                # Register callback for market data
+                ws_client.on_message = on_message
+                ws_client.on_open = on_open
+                ws_client.on_error = on_error
+                ws_client.on_close = on_close
+                
+                # Connect
+                ws_client.connect()
+                
+                # Create a list of tokens to subscribe
+                tokens = []
+                
+                # Add stock tokens
+                for symbol, stock_info in stocks_data.items():
+                    if stock_info.get("token") and stock_info.get("exchange"):
+                        tokens.append({
+                            "exchangeType": stock_info["exchange"],
+                            "tokens": [stock_info["token"]]
+                        })
+                
+                # Add option tokens
+                for option_key, option_info in options_data.items():
+                    if option_info.get("token") and option_info.get("exchange"):
+                        tokens.append({
+                            "exchangeType": option_info["exchange"],
+                            "tokens": [option_info["token"]]
+                        })
+                
+                # Subscribe in batches to avoid overwhelming the server
+                BATCH_SIZE = 50
+                for i in range(0, len(tokens), BATCH_SIZE):
+                    batch = tokens[i:i+BATCH_SIZE]
+                    ws_client.subscribe(batch)
+                    time.sleep(0.1)  # Small delay between batches
+                
+                logger.info(f"WebSocket connection established and subscribed to {len(tokens)} symbols")
+                return True
+            else:
+                logger.warning("Missing required tokens for WebSocket connection")
+                return False
+        else:
+            logger.warning("Failed to get session details for WebSocket")
+            return False
+    except Exception as e:
+        logger.error(f"Error setting up WebSocket: {e}")
+        return False
+
+# Callback functions for WebSocket
+def on_message(message):
+    """Handle incoming WebSocket messages"""
+    try:
+        data = json.loads(message)
+        
+        if "tk" in data and "ltp" in data:
+            token = data["tk"]
+            ltp = float(data["ltp"])
+            
+            # Update stock data if token matches
+            for symbol, stock_info in stocks_data.items():
+                if stock_info.get("token") == token:
+                    with stocks_data_lock:
+                        previous_ltp = stock_info["ltp"]
+                        stock_info["ltp"] = ltp
+                        
+                        # Update high/low if needed
+                        if stock_info.get("high") is None or ltp > stock_info["high"]:
+                            stock_info["high"] = ltp
+                        if stock_info.get("low") is None or ltp < stock_info["low"]:
+                            stock_info["low"] = ltp
+                        
+                        # Calculate movement percentage
+                        if previous_ltp is not None and previous_ltp > 0:
+                            stock_info["movement_pct"] = ((ltp - previous_ltp) / previous_ltp) * 100
+                        
+                        # Calculate change percentage
+                        if stock_info.get("open") and stock_info["open"] > 0:
+                            stock_info["change_percent"] = ((ltp - stock_info["open"]) / stock_info["open"]) * 100
+                        
+                        # Update last update time
+                        stock_info["last_updated"] = datetime.now()
+                    
+                    # Update UI data store
+                    with ui_data_store_lock:
+                        if symbol not in ui_data_store.get('stocks', {}):
+                            ui_data_store['stocks'][symbol] = {}
+                        
+                        ui_data_store['stocks'][symbol]['price'] = ltp
+                        ui_data_store['stocks'][symbol]['change'] = stock_info["change_percent"]
+                    
+                    # Add to price history periodically (not every tick to reduce memory usage)
+                    current_time = datetime.now()
+                    last_update = last_data_update["stocks"].get(symbol)
+                    
+                    if last_update is None or (current_time - last_update).total_seconds() >= 1:  # Update every second
+                        with price_history_lock:
+                            timestamp = pd.Timestamp.now()
+                            
+                            new_data = {
+                                'timestamp': timestamp,
+                                'price': ltp,
+                                'volume': 0,
+                                'open': stock_info.get("open", ltp),
+                                'high': stock_info.get("high", ltp),
+                                'low': stock_info.get("low", ltp)
+                            }
+                            
+                            stock_info["price_history"] = pd.concat([
+                                stock_info["price_history"], 
+                                pd.DataFrame([new_data])
+                            ], ignore_index=True)
+                            
+                            # Limit price history size
+                            if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                                stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                        
+                        last_data_update["stocks"][symbol] = current_time
+                    
+                    break
+            
+            # Update option data if token matches
+            for option_key, option_info in options_data.items():
+                if option_info.get("token") == token:
+                    with options_data_lock:
+                        previous_ltp = option_info["ltp"]
+                        option_info["ltp"] = ltp
+                        
+                        # Update high/low if needed
+                        if option_info.get("high") is None or ltp > option_info["high"]:
+                            option_info["high"] = ltp
+                        if option_info.get("low") is None or ltp < option_info["low"]:
+                            option_info["low"] = ltp
+                        
+                        # Calculate change percentage
+                        if previous_ltp is not None and previous_ltp > 0:
+                            option_info["change_percent"] = ((ltp - previous_ltp) / previous_ltp) * 100
+                        
+                        # Update last update time
+                        option_info["last_updated"] = datetime.now()
+                    
+                    # Add to price history periodically
+                    current_time = datetime.now()
+                    last_update = last_data_update["options"].get(option_key)
+                    
+                    if last_update is None or (current_time - last_update).total_seconds() >= 1:  # Update every second
+                        with price_history_lock:
+                            timestamp = pd.Timestamp.now()
+                            
+                            new_data = {
+                                'timestamp': timestamp,
+                                'price': ltp,
+                                'volume': 0,
+                                'open_interest': 0,
+                                'change': option_info.get("change_percent", 0),
+                                'open': option_info.get("open", ltp),
+                                'high': option_info.get("high", ltp),
+                                'low': option_info.get("low", ltp),
+                                'is_fallback': False
+                            }
+                            
+                            # Ensure all columns exist
+                            for col in new_data.keys():
+                                if col not in option_info["price_history"].columns:
+                                    option_info["price_history"][col] = np.nan
+                            
+                            option_info["price_history"] = pd.concat([
+                                option_info["price_history"], 
+                                pd.DataFrame([new_data])
+                            ], ignore_index=True)
+                            
+                            # Limit history size
+                            if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                                option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                        
+                        # Generate signals periodically
+                        generate_option_signals(option_key)
+                        
+                        last_data_update["options"][option_key] = current_time
+                    
+                    break
+        
+        # Update last WebSocket update time
+        last_data_update["websocket"] = datetime.now()
+        
+    except Exception as e:
+        logger.error(f"Error handling WebSocket message: {e}")
+
+def on_open():
+    """Handle WebSocket connection open"""
+    logger.info("WebSocket connection opened")
+
+def on_error(error):
+    """Handle WebSocket error"""
+    logger.error(f"WebSocket error: {error}")
+
+def on_close():
+    """Handle WebSocket connection close"""
+    logger.info("WebSocket connection closed")
+
+# Improved batch processing for performance
+def batch_process_data_items(items, process_func, batch_size=10, delay=0.01):
+    """
+    Process a list of items in batches with a small delay between batches
+    to avoid overwhelming the system or APIs
+    
+    Args:
+        items (list): List of items to process
+        process_func (callable): Function to process each item
+        batch_size (int, optional): Batch size. Defaults to 10.
+        delay (float, optional): Delay between batches in seconds. Defaults to 0.01.
+    """
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i+batch_size]
+        
+        for item in batch:
+            try:
+                process_func(item)
+            except Exception as e:
+                logger.error(f"Error processing item {item}: {e}")
+        
+        # Small delay between batches
+        if i + batch_size < len(items):
+            time.sleep(delay)
+
+# Use batch processing for options update
+def update_all_options_batch():
+    """
+    Update all options in batches for better performance and API usage
+    """
+    global options_data, broker_connected, smart_api, ui_data_store
+    
+    # Skip if not connected to broker
+    if not broker_connected:
+        logger.warning("Broker not connected. Skipping options update.")
+        return
+    
+    # Prioritize options to update
+    priority_options = []
+    regular_options = []
+    
+    # Create a default datetime for options without last_updated
+    default_time = datetime.min
+    
+    # Thread-safe access to options_data
+    with options_data_lock:
+        for option_key, option_info in options_data.items():
+            parent_symbol = option_info.get("parent_symbol")
+            option_type = option_info.get("option_type", "").lower()
+            
+            # Check if this is a primary option for any stock
+            is_primary = False
+            if parent_symbol in stocks_data:
+                primary_key = stocks_data[parent_symbol].get(f"primary_{option_type}")
+                if primary_key == option_key:
+                    is_primary = True
+            
+            # Check if this option is in an active trade
+            is_active_trade = trading_state.active_trades.get(option_key, False)
+            
+            # Determine update priority
+            if is_primary or is_active_trade:
+                priority_options.append(option_key)
+            else:
+                regular_options.append(option_key)
+    
+    # Update priority options first
+    logger.info(f"Updating {len(priority_options)} priority options")
+    batch_process_data_items(priority_options, fetch_option_data, batch_size=5, delay=0.02)
+    
+    # Sort regular options by last update time, oldest first 
+    # Use a custom key function to handle None values
+    def get_update_time(option_key):
+        with options_data_lock:
+            last_updated = options_data[option_key].get("last_updated")
+            return last_updated if last_updated is not None else default_time
+    
+    sorted_regular_options = sorted(regular_options, key=get_update_time)
+    
+    # Update a limited number of regular options each cycle
+    max_regular_updates = min(len(sorted_regular_options), 10)  # Limit to 10 options per cycle
+    if max_regular_updates > 0:
+        options_to_update = sorted_regular_options[:max_regular_updates]
+        logger.info(f"Updating {len(options_to_update)} of {len(sorted_regular_options)} regular options")
+        batch_process_data_items(options_to_update, fetch_option_data, batch_size=5, delay=0.02)
+    
+    # Log overall update status
+    logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
+
+# Improved connection retry with exponential backoff
+class ExponentialBackoff:
+    """
+    Implements exponential backoff for connection retries
+    """
+    def __init__(self, initial_delay=1, max_delay=300, factor=2, jitter=0.1):
+        """
+        Initialize exponential backoff parameters
+        
+        Args:
+            initial_delay (int): Initial delay in seconds
+            max_delay (int): Maximum delay in seconds
+            factor (int): Multiplicative factor for backoff
+            jitter (float): Random jitter factor (0-1)
+        """
+        self.initial_delay = initial_delay
+        self.max_delay = max_delay
+        self.factor = factor
+        self.jitter = jitter
+        self.attempt = 0
+        self.reset()
+    
+    def reset(self):
+        """Reset backoff to initial state"""
+        self.attempt = 0
+        self.next_retry = None
+    
+    def next(self):
+        """Calculate next backoff delay"""
+        self.attempt += 1
+        delay = min(self.max_delay, self.initial_delay * (self.factor ** (self.attempt - 1)))
+        jitter_amount = random.uniform(0, delay * self.jitter)
+        total_delay = delay + jitter_amount
+        self.next_retry = datetime.now() + timedelta(seconds=total_delay)
+        return total_delay
+    
+    def should_retry(self):
+        """Check if we should retry now based on backoff"""
+        if self.next_retry is None:
+            return True
+        return datetime.now() >= self.next_retry
+
+# Create global backoff handler
+connection_backoff = ExponentialBackoff(
+    initial_delay=1,  # Start with 1 second
+    max_delay=300,    # Cap at 5 minutes
+    factor=2,         # Double each time
+    jitter=0.1        # Add 0-10% random jitter
+)
+
+# Improved connection function with better error handling
+def connect_to_broker_with_backoff():
+    """Connect to the broker API with improved backoff and error handling"""
+    global smart_api, broker_connected, broker_error_message, last_connection_time, connection_backoff
+    
+    if broker_connected and smart_api is not None:
+        return True
+    
+    # Check if we should retry based on backoff
+    if not connection_backoff.should_retry():
+        return False
+    
+    try:
+        logger.info(f"Connecting to broker (attempt {connection_backoff.attempt + 1})...")
+        
+        # Get TOTP code
+        totp = pyotp.TOTP(config.totp_secret)
+        totp_value = totp.now()
+        
+        # Initialize the API
+        smart_api = SmartConnect(api_key=config.api_key)
+        
+        # Login to SmartAPI
+        login_resp = smart_api.generateSession(config.username, config.password, totp_value)
+        
+        # Check login response
+        if isinstance(login_resp, dict):
+            if login_resp.get("status"):
+                # Store refresh token for later use
+                config.refresh_token = login_resp.get("data", {}).get("refreshToken", "")
+                config.last_refreshed = datetime.now()
+                
+                broker_connected = True
+                broker_error_message = None
+                last_connection_time = datetime.now()
+                
+                # Verify connection with a test API call
+                profile = smart_api.getProfile(refreshToken=config.refresh_token)
+                
+                if isinstance(profile, dict) and profile.get("status"):
+                    logger.info(f"Connected as {profile.get('data', {}).get('name', 'User')}")
+                    
+                    # Connection successful, reset backoff
+                    connection_backoff.reset()
+                    return True
+                else:
+                    # Profile validation failed
+                    logger.warning(f"Profile verification returned unexpected response: {profile}")
+                    smart_api = None
+                    broker_connected = False
+                    # Calculate next retry time
+                    backoff_time = connection_backoff.next()
+                    logger.info(f"Will retry in {backoff_time:.1f} seconds")
+                    return False
+            else:
+                # Login failed
+                error_msg = login_resp.get("message", "Unknown error")
+                error_code = login_resp.get("errorCode", "")
+                
+                # Handle specific error cases
+                if any(x in error_msg.lower() for x in ["invalid", "incorrect", "wrong"]):
+                    broker_error_message = "Invalid credentials. Please check API key and login details."
+                    # Longer backoff for invalid credentials
+                    connection_backoff.attempt = 5  # Simulate higher attempt count for longer delay
+                    backoff_time = connection_backoff.next()
+                    logger.error(f"Authentication failed: {error_msg}. Will retry in {backoff_time:.1f} seconds")
+                    
+                elif "block" in error_msg.lower() or error_code == "AB1006":
+                    broker_error_message = "Account blocked for trading. Please contact broker support."
+                    # Very long backoff for blocked accounts
+                    connection_backoff.attempt = 10  # Simulate higher attempt count for longer delay
+                    backoff_time = connection_backoff.next()
+                    logger.error(f"Account blocked: {error_msg}. Will retry in {backoff_time:.1f} seconds")
+                    logger.warning("==========================================")
+                    logger.warning("ACCOUNT BLOCKED - REQUIRES MANUAL ACTION:")
+                    logger.warning("1. Contact AngelOne customer support")
+                    logger.warning("2. Verify KYC and account status")
+                    logger.warning("3. Resolve any pending issues with your account")
+                    logger.warning("==========================================")
+                    
+                elif "limit" in error_msg.lower():
+                    broker_error_message = f"Rate limit exceeded: {error_msg}"
+                    backoff_time = connection_backoff.next()
+                    logger.warning(f"Rate limit exceeded. Will retry in {backoff_time:.1f} seconds")
+                    
+                else:
+                    broker_error_message = f"Login failed: {error_msg}"
+                    backoff_time = connection_backoff.next()
+                    logger.warning(f"Failed to connect: {error_msg}. Will retry in {backoff_time:.1f} seconds")
+                
+                # Reset connection variables
+                smart_api = None
+                broker_connected = False
+                return False
+        else:
+            broker_error_message = "Invalid response from broker API"
+            logger.error(f"Invalid login response type: {type(login_resp)}")
+            backoff_time = connection_backoff.next()
+            logger.warning(f"Will retry in {backoff_time:.1f} seconds")
+            
+            # Reset connection variables
+            smart_api = None
+            broker_connected = False
+            return False
+            
+    except Exception as e:
+        error_str = str(e).lower()
+        if "timeout" in error_str:
+            broker_error_message = "Connection timeout. Check your internet connection."
+        elif "connection" in error_str:
+            broker_error_message = "Network error. Check your internet connection."
+        else:
+            broker_error_message = f"Connection error: {str(e)}"
+        
+        logger.error(f"Error connecting to broker: {e}")
+        
+        # Get next backoff time
+        backoff_time = connection_backoff.next()
+        logger.warning(f"Will retry in {backoff_time:.1f} seconds")
+        
+        smart_api = None
+        broker_connected = False
+        return False
+
+# Improved error handling for API calls
+# Continuing the ErrorTracker class
+class ErrorTracker:
+    """
+    Track and manage errors for different API endpoints
+    """
+    def __init__(self, max_errors=5, reset_period=300):
+        """
+        Initialize error tracker
+        
+        Args:
+            max_errors (int): Maximum number of errors before taking action
+            reset_period (int): Period in seconds after which error count resets
+        """
+        self.max_errors = max_errors
+        self.reset_period = reset_period
+        self.error_counts = {}
+        self.last_errors = {}
+        self.first_error_times = {}
+        self.lock = threading.Lock()
+    
+    def record_error(self, endpoint):
+        """
+        Record an error for a specific endpoint
+        
+        Args:
+            endpoint (str): The API endpoint or operation name
+            
+        Returns:
+            bool: True if max errors exceeded, False otherwise
+        """
+        with self.lock:
+            current_time = datetime.now()
+            
+            # Record first error time
+            if endpoint not in self.first_error_times:
+                self.first_error_times[endpoint] = current_time
+            
+            # Check if we should reset the error count
+            if endpoint in self.first_error_times:
+                time_since_first_error = (current_time - self.first_error_times[endpoint]).total_seconds()
+                if time_since_first_error > self.reset_period:
+                    # Reset the error count after the reset period
+                    self.error_counts[endpoint] = 1
+                    self.first_error_times[endpoint] = current_time
+                else:
+                    # Increment the error count
+                    self.error_counts[endpoint] = self.error_counts.get(endpoint, 0) + 1
+            else:
+                self.error_counts[endpoint] = 1
+            
+            # Record the current time as the last error time
+            self.last_errors[endpoint] = current_time
+            
+            # Check if max errors exceeded
+            return self.error_counts.get(endpoint, 0) >= self.max_errors
+    
+    def get_error_count(self, endpoint):
+        """Get current error count for an endpoint"""
+        with self.lock:
+            return self.error_counts.get(endpoint, 0)
+    
+    def reset(self, endpoint=None):
+        """
+        Reset error count for an endpoint or all endpoints
+        
+        Args:
+            endpoint (str, optional): Specific endpoint to reset. Defaults to None (reset all).
+        """
+        with self.lock:
+            if endpoint:
+                self.error_counts.pop(endpoint, None)
+                self.first_error_times.pop(endpoint, None)
+                self.last_errors.pop(endpoint, None)
+            else:
+                self.error_counts.clear()
+                self.first_error_times.clear()
+                self.last_errors.clear()
+    
+    def should_skip_endpoint(self, endpoint):
+        """
+        Check if an endpoint should be skipped due to excessive errors
+        
+        Args:
+            endpoint (str): The API endpoint or operation name
+            
+        Returns:
+            bool: True if endpoint should be skipped, False otherwise
+        """
+        with self.lock:
+            if endpoint not in self.error_counts:
+                return False
+                
+            # Skip if max errors exceeded and last error was recent
+            current_time = datetime.now()
+            last_error_time = self.last_errors.get(endpoint)
+            
+            if (self.error_counts.get(endpoint, 0) >= self.max_errors and 
+                last_error_time and 
+                (current_time - last_error_time).total_seconds() < 60):  # Skip for at least 1 minute
+                return True
+            
+            return False
+
+# Create global error tracker
+api_error_tracker = ErrorTracker(max_errors=3, reset_period=300)  # 3 errors in 5 minutes
+
+# Improved API wrapper with error tracking
+def safe_api_call(func_name, func, *args, **kwargs):
+    """
+    Safely call an API function with error tracking and backoff
+    
+    Args:
+        func_name (str): Function name for logging and tracking
+        func (callable): The API function to call
+        *args: Arguments to pass to the function
+        **kwargs: Keyword arguments to pass to the function
+        
+    Returns:
+        The result of the function call, or None if an error occurred
+    """
+    # Check if we should skip this endpoint due to excessive errors
+    if api_error_tracker.should_skip_endpoint(func_name):
+        logger.warning(f"Skipping {func_name} due to excessive errors")
+        return None
+    
+    try:
+        # Apply rate limiting
+        rate_limit_handler.wait_if_needed(func_name)
+        
+        # Make the API call
+        result = func(*args, **kwargs)
+        
+        # Check for error in result
+        if isinstance(result, dict) and not result.get("status"):
+            error_msg = result.get("message", "Unknown error")
+            error_code = result.get("errorCode", "")
+            
+            logger.warning(f"API error in {func_name}: {error_msg} (Code: {error_code})")
+            
+            # Check for rate limit errors
+            if ("access rate" in error_msg.lower() or 
+                "try after some time" in error_msg.lower() or 
+                "session expired" in error_msg.lower()):
+                
+                rate_limit_handler.register_rate_limit_hit(func_name)
+                
+                # Record the error
+                exceeded = api_error_tracker.record_error(func_name)
+                if exceeded:
+                    logger.error(f"Excessive errors for {func_name}, will temporarily skip this endpoint")
+                
+                return None
+            
+            # Record the error
+            api_error_tracker.record_error(func_name)
+            
+            return None
+        
+        # Reset error count on success
+        api_error_tracker.reset(func_name)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Exception in {func_name}: {e}")
+        
+        # Check for rate limit errors
+        if "access rate" in str(e).lower() or "rate limit" in str(e).lower() or "session expired" in str(e).lower():
+            rate_limit_handler.register_rate_limit_hit(func_name)
+        
+        # Record the error
+        exceeded = api_error_tracker.record_error(func_name)
+        if exceeded:
+            logger.error(f"Excessive errors for {func_name}, will temporarily skip this endpoint")
+        
+        return None
+
+# Add comprehensive error recovery functions
+def attempt_recovery():
+    """
+    Attempt to recover from a critical error state
+    
+    Returns:
+        bool: True if recovery was successful, False otherwise
+    """
+    global smart_api, broker_connected, broker_error_message
+    
+    logger.warning("Attempting system recovery...")
+    
+    # 1. Reset connection state
+    smart_api = None
+    broker_connected = False
+    broker_error_message = "Recovery in progress..."
+    
+    # 2. Clear API error tracker
+    api_error_tracker.reset()
+    
+    # 3. Clear rate limit handler
+    rate_limit_handler.rate_limit_hits.clear()
+    
+    # 4. Attempt to reconnect to broker
+    try:
+        logger.info("Attempting broker reconnection...")
+        connection_success = connect_to_broker_with_backoff()
+        
+        if connection_success:
+            logger.info("Recovery successful: Broker reconnected")
+            
+            # 5. Update all data
+            update_all_stocks()
+            update_all_options()
+            update_all_pcr_data()
+            
+            return True
+        else:
+            logger.warning("Recovery partial: Broker reconnection failed")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Recovery failed: {e}")
+        return False
+
+# Add consistent error handling to all fetch functions
+def fetch_with_error_handling(fetch_func, item_key, max_retries=3, retry_delay=1.0):
+    """
+    Generic wrapper for fetch functions with consistent error handling
+    
+    Args:
+        fetch_func (callable): The fetch function to call
+        item_key (str): Key/name of the item being fetched (for logging)
+        max_retries (int, optional): Maximum number of retries. Defaults to 3.
+        retry_delay (float, optional): Delay between retries in seconds. Defaults to 1.0.
+        
+    Returns:
+        The result of the fetch function, or None if all retries failed
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = fetch_func(item_key)
+            if result:
+                # Reset error tracker on success
+                api_error_tracker.reset(f"fetch_{item_key}")
+                return result
+                
+            # If result is falsy (False, None, etc.), it's an error
+            logger.warning(f"Fetch failed for {item_key} (attempt {attempt}/{max_retries})")
+            
+            if attempt < max_retries:
+                # Add some jitter to the retry delay
+                jitter = random.uniform(0, 0.2 * retry_delay)
+                sleep_time = retry_delay + jitter
+                time.sleep(sleep_time)
+            
+        except Exception as e:
+            logger.error(f"Exception fetching {item_key} (attempt {attempt}/{max_retries}): {e}")
+            
+            # Record error
+            api_error_tracker.record_error(f"fetch_{item_key}")
+            
+            if attempt < max_retries:
+                # Add some jitter to the retry delay
+                jitter = random.uniform(0, 0.2 * retry_delay)
+                sleep_time = retry_delay + jitter
+                time.sleep(sleep_time)
+    
+    # All retries failed
+    return None
+
+# Implement a system health monitoring function
+def check_system_health():
+    """
+    Check the overall health of the system and recover if needed
+    
+    Returns:
+        dict: Health status information
+    """
+    health = {
+        "status": "healthy",
+        "broker_connected": broker_connected,
+        "data_thread_running": data_thread_started,
+        "dashboard_initialized": dashboard_initialized,
+        "memory_usage_mb": 0,
+        "uptime_seconds": 0,
+        "errors": {
+            "connection": 0,
+            "api": 0,
+            "data_processing": 0
+        },
+        "warnings": []
+    }
+    
+    # Check broker connection
+    if not broker_connected:
+        health["status"] = "degraded"
+        health["warnings"].append("Broker not connected")
+        health["errors"]["connection"] = api_error_tracker.get_error_count("connect_to_broker")
+    
+    # Check API errors
+    total_api_errors = sum(count for endpoint, count in api_error_tracker.error_counts.items() if "connect" not in endpoint)
+    health["errors"]["api"] = total_api_errors
+    
+    if total_api_errors > 10:
+        health["status"] = "degraded"
+        health["warnings"].append(f"High API error count: {total_api_errors}")
+    
+    # Check thread health
+    if not data_thread_started:
+        health["status"] = "critical"
+        health["warnings"].append("Data thread not running")
+    
+    # Check memory usage
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+        health["memory_usage_mb"] = round(memory_mb, 2)
+        
+        if memory_mb > 500:  # Over 500 MB is high
+            health["status"] = "degraded"
+            health["warnings"].append(f"High memory usage: {round(memory_mb)} MB")
+    except:
+        health["memory_usage_mb"] = -1
+    
+    # Check last data updates
+    current_time = datetime.now()
+    for symbol, last_update in last_data_update["stocks"].items():
+        if last_update and (current_time - last_update).total_seconds() > 300:  # 5 minutes
+            health["warnings"].append(f"Stale data for {symbol}: Last update {(current_time - last_update).total_seconds():.0f}s ago")
+    
+    # Count active tasks
+    active_trades_count = sum(1 for v in trading_state.active_trades.values() if v)
+    health["active_trades"] = active_trades_count
+    
+    # Auto-recovery for critical status
+    if health["status"] == "critical":
+        logger.warning("Critical system health detected, attempting recovery")
+        recovery_result = attempt_recovery()
+        health["recovery_attempted"] = True
+        health["recovery_success"] = recovery_result
+    
+    return health
+
+# Add a health endpoint to the dashboard
+@app.callback(
+    Output("health-status", "children"),
+    Output("health-status", "className"),
+    [Input('slow-interval', 'n_intervals')]
+)
+def update_health_status(n_intervals):
+    """Update health status display"""
+    health = check_system_health()
+    
+    if health["status"] == "healthy":
+        status_class = "text-success"
+    elif health["status"] == "degraded":
+        status_class = "text-warning"
+    else:
+        status_class = "text-danger"
+    
+    # Create health status content
+    warnings = health.get("warnings", [])
+    warning_text = f"Warnings: {len(warnings)}" if warnings else ""
+    
+    status_text = f"System: {health['status'].upper()}"
+    if warning_text:
+        status_text = f"{status_text} • {warning_text}"
+    
+    return status_text, status_class
+
+# Add callback for S/R levels display
+@app.callback(
+    Output({"type": "stock-sr-levels", "index": MATCH}, "children"),
+    [Input('medium-interval', 'n_intervals')],
+    [State({"type": "stock-sr-levels", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_sr_levels_display(n_intervals, id_dict, ui_data):
+    """Update support and resistance levels display"""
+    if not ui_data or 'stocks' not in ui_data:
+        return "N/A"
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['stocks']:
+        return "N/A"
+    
+    stock_data = ui_data['stocks'][symbol]
+    support_levels = stock_data.get('support_levels', [])
+    resistance_levels = stock_data.get('resistance_levels', [])
+    
+    if not support_levels and not resistance_levels:
+        return "Not calculated"
+    
+    # Format levels for display
+    support_str = ", ".join([f"{s:.1f}" for s in support_levels[:2]])  # Show top 2
+    resistance_str = ", ".join([f"{r:.1f}" for r in resistance_levels[:2]])  # Show top 2
+    
+    return f"S: {support_str} | R: {resistance_str}"
+
+# Add callback for strategy prediction display
+@app.callback(
+    Output({"type": "strategy-prediction", "index": MATCH}, "children"),
+    [Input('medium-interval', 'n_intervals')],
+    [State({"type": "strategy-prediction", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_strategy_prediction_display(n_intervals, id_dict, ui_data):
+    """Update strategy prediction display"""
+    if not ui_data or 'predicted_strategies' not in ui_data:
+        return ""
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['predicted_strategies']:
+        return ""
+    
+    strategy_data = ui_data['predicted_strategies'][symbol]
+    strategy = strategy_data.get('strategy')
+    confidence = strategy_data.get('confidence', 0)
+    
+    if not strategy or strategy == "NONE" or confidence < 0.5:
+        return ""
+    
+    # Format a nice display
+    confidence_pct = f"{confidence:.0%}"
+    return html.Div([
+        html.Span("Best Strategy: ", className="text-muted small"),
+        html.Span(strategy, className="text-warning fw-bold small"),
+        html.Span(f" ({confidence_pct})", className="text-light small")
+    ])
+
+# Add better memory management for price history
+def optimize_price_history(symbol=None):
+    """
+    Optimize price history storage by resampling older data points
+    to reduce memory usage while preserving recent data at full resolution.
+    
+    Args:
+        symbol (str, optional): Symbol to optimize. If None, optimize all symbols.
+    """
+    global stocks_data, options_data
+    
+    try:
+        # Process specific symbol if provided
+        if symbol:
+            with stocks_data_lock:
+                if symbol in stocks_data:
+                    stock_info = stocks_data[symbol]
+                    # Only process if we have significant data
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        # Keep last 200 points at full resolution
+                        recent_data = stock_info["price_history"].tail(200)
+                        
+                        # Resample older data to 5-minute intervals
+                        older_data = stock_info["price_history"].iloc[:-200]
+                        if 'timestamp' in older_data.columns and len(older_data) > 100:
+                            older_data['timestamp'] = pd.to_datetime(older_data['timestamp'])
+                            older_data = older_data.set_index('timestamp')
+                            resampled = older_data.resample('5T').mean().reset_index()
+                            
+                            # Combine resampled older data with recent data
+                            stock_info["price_history"] = pd.concat([resampled, recent_data], ignore_index=True)
+            
+            # Also process options for this symbol
+            with options_data_lock:
+                for option_key, option_info in options_data.items():
+                    if option_info.get("parent_symbol") == symbol:
+                        if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                            # Keep last 200 points at full resolution
+                            recent_data = option_info["price_history"].tail(200)
+                            
+                            # Resample older data to 5-minute intervals
+                            older_data = option_info["price_history"].iloc[:-200]
+                            if 'timestamp' in older_data.columns and len(older_data) > 100:
+                                older_data['timestamp'] = pd.to_datetime(older_data['timestamp'])
+                                older_data = older_data.set_index('timestamp')
+                                resampled = older_data.resample('5T').mean().reset_index()
+                                
+                                # Combine resampled older data with recent data
+                                option_info["price_history"] = pd.concat([resampled, recent_data], ignore_index=True)
+        
+        # Process all symbols if none specified
+        else:
+            with stocks_data_lock:
+                for symbol, stock_info in stocks_data.items():
+                    # Only process if we have significant data
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        # Keep last 200 points at full resolution
+                        recent_data = stock_info["price_history"].tail(200)
+                        
+                        # Resample older data to 5-minute intervals
+                        older_data = stock_info["price_history"].iloc[:-200]
+                        if 'timestamp' in older_data.columns and len(older_data) > 100:
+                            older_data['timestamp'] = pd.to_datetime(older_data['timestamp'])
+                            older_data = older_data.set_index('timestamp')
+                            resampled = older_data.resample('5T').mean().reset_index()
+                            
+                            # Combine resampled older data with recent data
+                            stock_info["price_history"] = pd.concat([resampled, recent_data], ignore_index=True)
+            
+            with options_data_lock:
+                for option_key, option_info in options_data.items():
+                    if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        # Keep last 200 points at full resolution
+                        recent_data = option_info["price_history"].tail(200)
+                        
+                        # Resample older data to 5-minute intervals
+                        older_data = option_info["price_history"].iloc[:-200]
+                        if 'timestamp' in older_data.columns and len(older_data) > 100:
+                            older_data['timestamp'] = pd.to_datetime(older_data['timestamp'])
+                            older_data = older_data.set_index('timestamp')
+                            resampled = older_data.resample('5T').mean().reset_index()
+                            
+                            # Combine resampled older data with recent data
+                            option_info["price_history"] = pd.concat([resampled, recent_data], ignore_index=True)
+        
+        logger.info(f"Price history optimization completed for {'all symbols' if symbol is None else symbol}")
+    except Exception as e:
+        logger.error(f"Error optimizing price history: {e}")
+
+# Add a system health monitoring card to the layout
+def create_health_monitoring_card():
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H4("System Health", className="text-primary d-inline me-2 mb-0"),
+            html.Span(id="health-status", className="badge ms-2")
+        ], style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Broker: ", className="text-muted me-2"),
+                        html.Span(id="broker-status", className="badge")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Memory: ", className="text-muted me-2"),
+                        html.Span(id="memory-usage", className="text-light")
+                    ], className="mb-2")
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("API Errors: ", className="text-muted me-2"),
+                        html.Span(id="api-errors", className="text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        dbc.Button(
+                            "Force Refresh", 
+                            id="force-refresh-button", 
+                            color="warning", 
+                            size="sm",
+                            className="mt-2 me-2"
+                        ),
+                        dbc.Button(
+                            "Restart System", 
+                            id="restart-system-button", 
+                            color="danger", 
+                            size="sm",
+                            className="mt-2"
+                        )
+                    ])
+                ], width=6)
+            ])
+        ], className="px-4 py-3")
+    ], 
+    style=custom_css["card"],
+    className="mb-3 border-primary"
+    )
+
+# Add callbacks for the health monitoring card
+@app.callback(
+    Output("memory-usage", "children"),
+    [Input('slow-interval', 'n_intervals')]
+)
+def update_memory_usage(n_intervals):
+    """Update memory usage display"""
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+        return f"{memory_mb:.1f} MB"
+    except:
+        return "N/A"
+
+@app.callback(
+    Output("api-errors", "children"),
+    Output("api-errors", "className"),
+    [Input('slow-interval', 'n_intervals')]
+)
+def update_api_errors(n_intervals):
+    """Update API errors display"""
+    total_errors = sum(api_error_tracker.error_counts.values()) if 'api_error_tracker' in globals() else 0
+    
+    # Determine text color based on error count
+    if total_errors == 0:
+        class_name = "text-success"
+    elif total_errors < 5:
+        class_name = "text-warning"
+    else:
+        class_name = "text-danger"
+    
+    return str(total_errors), class_name
+
+@app.callback(
+    Output("notification-toast", "is_open"),
+    Output("notification-toast", "header"),
+    Output("notification-toast", "children"),
+    Output("notification-toast", "icon"),
+    [Input("force-refresh-button", "n_clicks"),
+     Input("restart-system-button", "n_clicks")],
+    [State("notification-toast", "is_open")],
+    prevent_initial_call=True
+)
+def handle_system_actions(force_refresh_clicks, restart_clicks, is_open):
+    """Handle system action buttons"""
+    ctx = dash.callback_context
+    
+    if not ctx.triggered:
+        return is_open, "", "", "primary"
+        
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    if button_id == "force-refresh-button":
+        # Force data refresh
+        try:
+            update_all_stocks()
+            update_all_options()
+            update_all_pcr_data()
+            api_error_tracker.reset()  # Reset error tracker
+            return True, "Refresh Complete", "All market data has been refreshed.", "success"
+        except Exception as e:
+            return True, "Refresh Failed", f"Error: {str(e)}", "danger"
+            
+    elif button_id == "restart-system-button":
+        # Attempt system recovery
+        try:
+            recovery_result = attempt_recovery()
+            if recovery_result:
+                return True, "System Restarted", "The system has been successfully restarted.", "success"
+            else:
+                return True, "Restart Incomplete", "System restart was partially successful. Some services may not be running correctly.", "warning"
+        except Exception as e:
+            return True, "Restart Failed", f"Error: {str(e)}", "danger"
+    
+    return is_open, "", "", "primary"
+
+# Add a dashboard metrics card to track performance
+def create_dashboard_metrics_card():
+    return dbc.Card([
+        dbc.CardHeader(html.H4("Dashboard Metrics", className="text-info mb-0"), 
+                      style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Tracked Stocks: ", className="text-muted me-2"),
+                        html.Span(id="tracked-stocks-count", className="text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Tracked Options: ", className="text-muted me-2"),
+                        html.Span(id="tracked-options-count", className="text-light")
+                    ], className="mb-2")
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("API Calls: ", className="text-muted me-2"),
+                        html.Span(id="api-calls-count", className="text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Last Refresh: ", className="text-muted me-2"),
+                        html.Span(id="last-system-refresh", className="text-light")
+                    ], className="mb-2")
+                ], width=6)
+            ])
+        ], className="px-4 py-3")
+    ], 
+    style=custom_css["card"],
+    className="mb-3 border-info"
+    )
+
+# Add dashboard metrics callbacks
+@app.callback(
+    [Output("tracked-stocks-count", "children"),
+     Output("tracked-options-count", "children"),
+     Output("api-calls-count", "children"),
+     Output("last-system-refresh", "children")],
+    [Input('medium-interval', 'n_intervals')]
+)
+def update_dashboard_metrics(n_intervals):
+    """Update dashboard metrics display"""
+    # Count tracked stocks
+    stocks_count = len(stocks_data) if 'stocks_data' in globals() else 0
+    
+    # Count tracked options
+    options_count = len(options_data) if 'options_data' in globals() else 0
+    
+    # Count API calls from rate limit handler
+    api_calls = sum(len(timestamps) for timestamps in rate_limit_handler.request_timestamps.values())
+    
+    # Get last refresh time
+    last_refresh = max(
+        [datetime.min] + 
+        [t for t in last_data_update["stocks"].values() if t is not None] + 
+        [t for t in last_data_update["options"].values() if t is not None] + 
+        [last_data_update["websocket"]] if last_data_update["websocket"] else []
+    )
+    
+    if last_refresh == datetime.min:
+        last_refresh_text = "Never"
+    else:
+        last_refresh_text = last_refresh.strftime("%H:%M:%S")
+    
+    return str(stocks_count), str(options_count), str(api_calls), last_refresh_text
+
+# Add a debug console component to the dashboard
+def create_debug_console():
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H4("Debug Console", className="text-danger d-inline me-2 mb-0"),
+            dbc.Button(
+                "Clear", 
+                id="clear-console-button", 
+                color="danger", 
+                size="sm",
+                className="float-end"
+            )
+        ], style=custom_css["header"]),
+        dbc.CardBody([
+            html.Pre(
+                id="debug-console-output", 
+                style={
+                    "height": "300px", 
+                    "overflow-y": "auto", 
+                    "background-color": "#1A1A1A", 
+                    "padding": "10px",
+                    "font-family": "monospace",
+                    "font-size": "12px",
+                    "color": "#E0E0E0"
+                }
+            ),
+            dbc.InputGroup([
+                dbc.Input(
+                    id="debug-command-input", 
+                    placeholder="Enter debug command...", 
+                    type="text",
+                    className="border-0 bg-dark text-light"
+                ),
+                dbc.Button("Run", id="run-debug-command", color="primary")
+            ], className="mt-2")
+        ], className="px-4 py-3")
+    ], 
+    style=custom_css["card"],
+    className="mb-3 border-danger"
+    )
+
+# Add debug console callbacks
+@app.callback(
+    Output("debug-console-output", "children"),
+    [Input("run-debug-command", "n_clicks"),
+     Input("clear-console-button", "n_clicks")],
+    [State("debug-command-input", "value"),
+     State("debug-console-output", "children")],
+    prevent_initial_call=True
+)
+def handle_debug_command(run_clicks, clear_clicks, command, current_output):
+    """Handle debug console commands"""
+    ctx = dash.callback_context
+    
+    if not ctx.triggered:
+        return current_output
+        
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    if button_id == "clear-console-button":
+        return ""
+        
+    if button_id == "run-debug-command" and command:
+        # Process the command
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Command processing
+            if command.lower() == "help":
+                result = """Available commands:
+help - Show this help message
+status - Show system status
+stocks - List tracked stocks
+options - List tracked options
+memory - Show memory usage
+errors - Show error counts
+broker - Show broker connection status
+clear - Clear console
+"""
+            elif command.lower() == "status":
+                health = check_system_health()
+                result = f"System Status: {health['status'].upper()}\n"
+                result += f"Broker Connected: {health['broker_connected']}\n"
+                result += f"Active Trades: {health['active_trades']}\n"
+                result += f"Memory Usage: {health['memory_usage_mb']} MB\n"
+                result += f"Warnings: {', '.join(health['warnings']) if health['warnings'] else 'None'}"
+                
+            elif command.lower() == "stocks":
+                result = "Tracked Stocks:\n"
+                for symbol, stock_info in stocks_data.items():
+                    result += f"- {symbol}: {stock_info.get('ltp', 'N/A')} (Last Updated: {stock_info.get('last_updated', 'Never')})\n"
+                    
+            elif command.lower() == "options":
+                result = "Tracked Options (first 10):\n"
+                for i, (option_key, option_info) in enumerate(list(options_data.items())[:10]):
+                    result += f"- {option_key}: {option_info.get('ltp', 'N/A')} (Last Updated: {option_info.get('last_updated', 'Never')})\n"
+                if len(options_data) > 10:
+                    result += f"... and {len(options_data) - 10} more"
+                    
+            elif command.lower() == "memory":
+                import psutil
+                process = psutil.Process()
+                memory_info = process.memory_info()
+                memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+                result = f"Memory Usage: {memory_mb:.2f} MB"
+                
+            elif command.lower() == "errors":
+                result = "Error Counts:\n"
+                for endpoint, count in api_error_tracker.error_counts.items():
+                    result += f"- {endpoint}: {count}\n"
+                    
+            elif command.lower() == "broker":
+                result = f"Broker Connected: {broker_connected}\n"
+                result += f"Last Connection: {last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never'}\n"
+                result += f"Error Message: {broker_error_message or 'None'}"
+                
+            elif command.lower() == "clear":
+                return ""
+                
+            else:
+                result = f"Unknown command: {command}"
+            
+            # Format the output
+            new_output = f"[{timestamp}] > {command}\n{result}\n\n"
+            
+            if current_output is None:
+                return new_output
+            else:
+                # Limit the console output length
+                combined_output = new_output + current_output
+                if len(combined_output) > 10000:  # Limit to approximately 10KB
+                    combined_output = combined_output[:10000] + "...\n[Output truncated]"
+                return combined_output
+                
+        except Exception as e:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            error_output = f"[{timestamp}] > {command}\nError: {str(e)}\n\n"
+            
+            if current_output is None:
+                return error_output
+            else:
+                return error_output + current_output
+    
+    return current_output
+
+# Update the layout to include new components
+def create_updated_layout():
+    return dbc.Container(
+        [
+            create_notification_container(),
+            
+            # Header with logo and title
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.H1("Options Trading Dashboard", className="text-center mb-3 text-light"),
+                        html.P("Real-time market data and automated trading signals", 
+                            className="text-center text-muted mb-2")
+                    ], className="py-3")
+                ])
+            ]),
+            
+            # System status row
+            dbc.Row([
+                dbc.Col([create_connection_status_card()], width=6),
+                dbc.Col([create_health_monitoring_card()], width=6)
+            ]),
+            
+            # Controls Row - Strategy Settings and Add Stock
+            dbc.Row([
+                dbc.Col([create_strategy_settings_card()], width=8),
+                dbc.Col([create_stock_control_card()], width=4)
+            ]),
+            
+            # Dashboard metrics
+            dbc.Row([
+                dbc.Col([create_dashboard_metrics_card()], width=12)
+            ]),
+            
+            # News section
+            dbc.Row([
+                dbc.Col([create_news_card()], width=12)
+            ]),
+            
+            # Stock cards container - Will be dynamically populated
+            html.Div(id="stock-cards-container"),
+            
+            # Market Summary and Performance Row
+            dbc.Row([
+                dbc.Col([create_market_sentiment_card()], width=6),
+                dbc.Col([create_performance_card()], width=6)
+            ]),
+            
+            # Active trades
+            dbc.Row([
+                dbc.Col([create_active_trades_card()], width=12),
+            ]),
+            
+            # Trade history graph and recents
+            dbc.Row([
+                dbc.Col([create_pnl_history_card()], width=8),
+                dbc.Col([create_recent_trades_card()], width=4)
+            ]),
+            
+            # Debug console (collapsed by default)
+            dbc.Row([
+                dbc.Col([
+                    dbc.Collapse(
+                        create_debug_console(),
+                        id="debug-console-collapse",
+                        is_open=False
+                    ),
+                    html.Div([
+                        dbc.Button(
+                            "Show Debug Console", 
+                            id="toggle-debug-console", 
+                            color="link", 
+                            className="text-muted small"
+                        )
+                    ], className="text-center mb-3")
+                ], width=12)
+            ]),
+            
+            # Store for data that needs to be shared between callbacks
+            dcc.Store(
+                id='ui-data-store',
+                storage_type='memory'
+            ),
+            
+            # Refresh intervals - more efficient refresh rates
+            dcc.Interval(
+                id='fast-interval',
+                interval=500,  # 0.5 seconds for time-sensitive data
+                n_intervals=0
+            ),
+            dcc.Interval(
+                id='medium-interval',
+                interval=1000,  # 1 second for regular updates
+                n_intervals=0
+            ),
+            dcc.Interval(
+                id='slow-interval',
+                interval=30000,  # 30 seconds for non-critical updates
+                n_intervals=0
+            ),
+        ],
+        fluid=True,
+        className="p-4",
+        style={"background-color": COLOR_SCHEME["bg_dark"], "min-height": "100vh"}
+    )
+
+# Add toggle callback for debug console
+@app.callback(
+    Output("debug-console-collapse", "is_open"),
+    Output("toggle-debug-console", "children"),
+    [Input("toggle-debug-console", "n_clicks")],
+    [State("debug-console-collapse", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_debug_console(n_clicks, is_open):
+    """Toggle debug console visibility"""
+    if n_clicks:
+        return not is_open, "Hide Debug Console" if not is_open else "Show Debug Console"
+    return is_open, "Show Debug Console" if not is_open else "Hide Debug Console"
+
+# Add a PnL chart callback
+@app.callback(
+    Output("pnl-graph", "figure"),
+    [Input('medium-interval', 'n_intervals')]
+)
+def update_pnl_graph(n_intervals):
+    """Update P&L history graph"""
+    # Extract P&L data from trade history
+    trades = trading_state.trades_history
+    
+    if not trades:
+        # Return empty figure
+        return {
+            'data': [],
+            'layout': {
+                'plot_bgcolor': 'rgba(0,0,0,0)',
+                'paper_bgcolor': 'rgba(0,0,0,0)',
+                'font': {'color': '#A9A9A9'},
+                'title': 'No trade history available',
+                'margin': {'l': 40, 'r': 40, 't': 40, 'b': 40},
+                'xaxis': {'showgrid': False, 'zeroline': False},
+                'yaxis': {'showgrid': True, 'gridcolor': 'rgba(80,80,80,0.2)', 'zeroline': False}
+            }
+        }
+    
+    # Sort trades by exit time
+    sorted_trades = sorted(trades, key=lambda x: x.get('exit_time', datetime.now()))
+    
+    # Calculate cumulative P&L
+    cumulative_pnl = []
+    running_total = 0
+    times = []
+    trade_texts = []
+    colors = []
+    
+    for trade in sorted_trades:
+        pnl = trade.get('pnl', 0)
+        running_total += pnl
+        cumulative_pnl.append(running_total)
+        times.append(trade.get('exit_time', datetime.now()))
+        
+        # Create hover text
+        symbol = trade.get('parent_symbol', 'Unknown')
+        option_type = trade.get('option_type', '')
+        strike = trade.get('strike', '')
+        reason = trade.get('reason', 'Unknown')
+        
+        hover_text = f"Symbol: {symbol} {option_type} {strike}<br>P&L: {pnl:.2f}<br>Reason: {reason}"
+        trade_texts.append(hover_text)
+        
+        # Determine color based on P&L
+        colors.append('green' if pnl > 0 else 'red')
+    
+    # Create the trace
+    trace = {
+        'x': times,
+        'y': cumulative_pnl,
+        'mode': 'lines+markers',
+        'name': 'P&L',
+        'line': {'color': '#0D6EFD', 'width': 2},
+        'marker': {
+            'color': colors,
+            'size': 8
+        },
+        'text': trade_texts,
+        'hoverinfo': 'text+y'
+    }
+    
+    # Create the layout
+    layout = {
+        'plot_bgcolor': 'rgba(0,0,0,0)',
+        'paper_bgcolor': 'rgba(0,0,0,0)',
+        'font': {'color': '#A9A9A9'},
+        'margin': {'l': 40, 'r': 40, 't': 20, 'b': 40},
+        'xaxis': {
+            'title': 'Time',
+            'showgrid': False,
+            'zeroline': False,
+            'type': 'date',
+            'tickformat': '%H:%M'
+        },
+        'yaxis': {
+            'title': 'Cumulative P&L',
+            'showgrid': True,
+            'gridcolor': 'rgba(80,80,80,0.2)',
+            'zeroline': True,
+            'zerolinecolor': 'rgba(255,255,255,0.2)'
+        },
+        'showlegend': False,
+        'hovermode': 'closest'
+    }
+    
+    return {'data': [trace], 'layout': layout}
+
+# Add recent trades callback
+@app.callback(
+    [Output("recent-trades-container", "children"),
+     Output("recent-trades-count", "children")],
+    [Input('medium-interval', 'n_intervals')]
+)
+def update_recent_trades(n_intervals):
+    """Update recent trades display"""
+    trades = trading_state.trades_history
+    
+    if not trades:
+        return [html.Div("No trade history available", className="text-muted text-center py-3")], "0"
+    
+    # Sort trades by exit time (most recent first)
+    sorted_trades = sorted(trades, key=lambda x: x.get('exit_time', datetime.now()), reverse=True)
+    
+    # Take the 10 most recent trades
+    recent_trades = sorted_trades[:10]
+    
+    trade_cards = []
+    for trade in recent_trades:
+        # Extract trade details
+        symbol = trade.get('parent_symbol', 'Unknown')
+        option_type = trade.get('option_type', '')
+        strategy = trade.get('strategy_type', 'Unknown')
+        pnl = trade.get('pnl', 0)
+        pnl_pct = trade.get('pnl_pct', 0)
+        entry_price = trade.get('entry_price', 0)
+        exit_price = trade.get('exit_price', 0)
+        exit_time = trade.get('exit_time', datetime.now())
+        reason = trade.get('reason', 'Unknown')
+        duration = trade.get('duration_minutes', 0)
+        
+        # Determine style based on P&L
+        pnl_color = "text-success" if pnl > 0 else "text-danger" if pnl < 0 else "text-muted"
+        
+        # Create trade card
+        card = dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.Div(f"{symbol} {option_type}", className="fw-bold"),
+                        html.Div(f"Strategy: {strategy}", className="small text-muted"),
+                        html.Div(f"Exit: {exit_time.strftime('%H:%M:%S')}", className="small text-muted")
+                    ], width=6),
+                    dbc.Col([
+                        html.Div([
+                            "P&L: ",
+                            html.Span(f"{pnl:.2f} ({pnl_pct:.2f}%)", className=pnl_color)
+                        ], className="fw-bold"),
+                        html.Div(f"Duration: {duration:.1f}m", className="small text-muted"),
+                        html.Div(f"Reason: {reason}", className="small text-muted")
+                    ], width=6, className="text-end")
+                ])
+            ], className="p-2")
+        ], className="mb-2 shadow-sm border-0")
+        
+        trade_cards.append(card)
+    
+    return trade_cards, str(len(trades))
+
+# Add comprehensive theming
+def apply_custom_styles():
+    """Apply custom styles to various components"""
+    # Add custom CSS
+    app.index_string = '''
+    <!DOCTYPE html>
+    <html>
+        <head>
+            {%metas%}
+            <title>{%title%}</title>
+            {%favicon%}
+            {%css%}
+            <style>
+                /* Base styles */
+                body {
+                    background-color: ''' + COLOR_SCHEME["bg_dark"] + ''';
+                    color: ''' + COLOR_SCHEME["text_light"] + ''';
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                }
+                
+                /* Card styles */
+                .card {
+                    background-color: ''' + COLOR_SCHEME["card_bg"] + ''';
+                    border-radius: 8px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    margin-bottom: 1rem;
+                    border: 1px solid ''' + COLOR_SCHEME["border"] + ''';
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }
+                
+                .card:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+                }
+                
+                .card-header {
+                    background-color: rgba(0, 0, 0, 0.2);
+                    border-bottom: 1px solid ''' + COLOR_SCHEME["border"] + ''';
+                    border-radius: 8px 8px 0 0;
+                }
+                
+                /* Badge styles */
+                .badge {
+                    transition: background-color 0.3s, color 0.3s;
+                }
+                
+                /* Progress bar styles */
+                .progress {
+                    background-color: rgba(0, 0, 0, 0.2);
+                    border-radius: 4px;
+                    overflow: hidden;
+                }
+                
+                .progress-bar {
+                    transition: width 0.3s ease-in-out;
+                }
+                
+                /* Input styles */
+                .form-control {
+                    background-color: ''' + COLOR_SCHEME["dark"] + ''';
+                    border-color: ''' + COLOR_SCHEME["border"] + ''';
+                    color: ''' + COLOR_SCHEME["text_light"] + ''';
+                }
+                
+                .form-control:focus {
+                    background-color: rgba(0, 0, 0, 0.2);
+                    color: ''' + COLOR_SCHEME["text_light"] + ''';
+                    border-color: ''' + COLOR_SCHEME["primary"] + ''';
+                    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+                }
+                
+                /* Button styles */
+                .btn {
+                    border-radius: 4px;
+                    transition: all 0.2s;
+                }
+                
+                .btn:hover {
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+                }
+                
+                /* Animation styles */
+                .value-update {
+                    transition: opacity 0.3s, transform 0.3s, color 0.3s;
+                }
+                
+                .highlight-positive {
+                    animation: pulse-positive 1s;
+                }
+                
+                .highlight-negative {
+                    animation: pulse-negative 1s;
+                }
+                
+                @keyframes pulse-positive {
+                    0% { background-color: rgba(25, 135, 84, 0); }
+                    50% { background-color: rgba(25, 135, 84, 0.2); }
+                    100% { background-color: rgba(25, 135, 84, 0); }
+                }
+                
+                @keyframes pulse-negative {
+                    0% { background-color: rgba(220, 53, 69, 0); }
+                    50% { background-color: rgba(220, 53, 69, 0.2); }
+                    100% { background-color: rgba(220, 53, 69, 0); }
+                }
+                
+                /* Scrollbar styles */
+                ::-webkit-scrollbar {
+                    width: 8px;
+                    height: 8px;
+                }
+                
+                ::-webkit-scrollbar-track {
+                    background: rgba(0, 0, 0, 0.1);
+                    border-radius: 4px;
+                }
+                
+                ::-webkit-scrollbar-thumb {
+                    background: rgba(100, 100, 100, 0.5);
+                    border-radius: 4px;
+                }
+                
+                ::-webkit-scrollbar-thumb:hover {
+                    background: rgba(100, 100, 100, 0.8);
+                }
+                
+                /* Responsive adjustments */
+                @media (max-width: 768px) {
+                    .container-fluid {
+                        padding: 0.5rem;
+                    }
+                    
+                    .row {
+                        margin-left: -0.25rem;
+                        margin-right: -0.25rem;
+                    }
+                    
+                    .col, .col-1, .col-2, .col-3, .col-4, .col-5, .col-6, 
+                    .col-7, .col-8, .col-9, .col-10, .col-11, .col-12 {
+                        padding-left: 0.25rem;
+                        padding-right: 0.25rem;
+                    }
+                }
+                
+                /* Custom transitions */
+                .dynamic-update {
+                    transition: all 0.3s ease-in-out !important;
+                }
+                
+                .price-element {
+                    transition: color 0.3s ease, background-color 0.3s ease !important;
+                }
+                
+                .badge-transition {
+                    transition: background-color 0.3s ease, color 0.3s ease !important;
+                }
+                
+                .no-flicker {
+                    transform: translateZ(0);
+                    backface-visibility: hidden;
+                }
+                
+                .progress-bar {
+                    transition: width 0.3s ease-in-out !important;
+                }
+                
+                .value-update {
+                    transition: opacity 0.3s, transform 0.3s, color 0.3s;
+                }
+                
+                .card-update {
+                    transition: border-color 0.3s ease-in-out;
+                }
+                
+                .highlight-positive, .highlight-negative {
+                    animation: none !important;
+                    transition: background-color 0.3s ease-in-out;
+                }
+                
+                .color-transition {
+                    transition: color 0.3s ease-in-out;
+                }
+            </style>
+        </head>
+        <body>
+            {%app_entry%}
+            <footer>
+                {%config%}
+                {%scripts%}
+                {%renderer%}
+            </footer>
+        </body>
+    </html>
+    '''
+
+# Update create_layout function to use the new components
+def create_layout():
+    apply_custom_styles()
+    return create_updated_layout()
+
+# Main application layout with improved UI
+app.layout = create_layout()
+
+# Update cleanup function to use the optimization
+def cleanup_old_data():
+    """Clean up old data to prevent memory bloat with improved optimization."""
+    global last_cleanup, stocks_data, options_data
+    
+    current_time = datetime.now()
+    if (current_time - last_cleanup).total_seconds() < DATA_CLEANUP_INTERVAL:
+        return
+    
+    logger.info("Running data cleanup...")
+    
+    # Optimize price history data instead of just truncating
+    optimize_price_history()
+    
+    # Clean up news data (keep only recent news)
+    if "items" in news_data:
+        # Keep only news from last 24 hours
+        recent_news = []
+        for item in news_data["items"]:
+            timestamp = item.get("timestamp")
+            if timestamp and isinstance(timestamp, datetime):
+                if (current_time - timestamp).total_seconds() < 86400:  # 24 hours
+                    recent_news.append(item)
+        
+        news_data["items"] = recent_news
+    
+    # Run Python garbage collection
+    import gc
+    gc.collect()
+    
+    last_cleanup = current_time
+    logger.info("Data cleanup completed")
 
 def load_historical_data(symbol, period="3mo", force_refresh=False):
     """Load historical data with proper validation and error handling"""
@@ -5156,40 +7617,6 @@ def update_all_stocks():
         # Short delay between batch requests to avoid overwhelming the API
         time.sleep(0.2)
 
-def cleanup_old_data():
-    """Clean up old data to prevent memory bloat."""
-    global last_cleanup, stocks_data, options_data
-    
-    current_time = datetime.now()
-    if (current_time - last_cleanup).total_seconds() < DATA_CLEANUP_INTERVAL:
-        return
-    
-    logger.info("Running data cleanup...")
-    
-    # Keep only the latest MAX_PRICE_HISTORY_POINTS data points for stocks
-    for symbol, stock_info in stocks_data.items():
-        if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-            stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-    
-    # Keep only the latest MAX_PRICE_HISTORY_POINTS data points for options
-    for option_key, option_info in options_data.items():
-        if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-            option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-    
-    # Clean up news data (keep only recent news)
-    if "items" in news_data:
-        # Keep only news from last 24 hours
-        recent_news = []
-        for item in news_data["items"]:
-            timestamp = item.get("timestamp")
-            if timestamp and isinstance(timestamp, datetime):
-                if (current_time - timestamp).total_seconds() < 86400:  # 24 hours
-                    recent_news.append(item)
-        
-        news_data["items"] = recent_news
-    
-    last_cleanup = current_time
-    logger.info("Data cleanup completed")
 
 def check_day_rollover():
     """Check if trading day has changed and reset daily stats."""
@@ -5353,6 +7780,8 @@ def fetch_bulk_data_comprehensive(symbols):
             logger.error(f"Error processing {symbol}: {e}", exc_info=True)
     
     return results
+
+
 def fetch_data_periodically():
     """Main function to fetch data periodically with smart retry logic."""
     global dashboard_initialized, data_thread_started, broker_error_message
