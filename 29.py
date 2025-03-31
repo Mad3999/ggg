@@ -5236,7 +5236,258 @@ def cleanup_inactive_stocks():
     for symbol in list(stocks_data.keys()):
         if should_remove_stock(symbol):
             remove_stock(symbol)
+def fetch_bulk_data_comprehensive(symbols):
+    """
+    Comprehensive bulk data fetching for stocks, options, and PCR
+    
+    Args:
+        symbols (list): List of stock symbols to fetch data for
+    
+    Returns:
+        dict: Comprehensive dictionary of fetched data
+    """
+    global smart_api, broker_connected, stocks_data, options_data, pcr_data
+    
+    # Validate input and broker connection
+    if not symbols or not broker_connected or smart_api is None:
+        logger.warning("Cannot fetch bulk data: Invalid input or not connected")
+        return {}
+    
+    # Refresh session if needed
+    refresh_session_if_needed()
+    
+    results = {
+        "stocks": {},
+        "options": {},
+        "pcr": {}
+    }
+    
+    for symbol in symbols:
+        try:
+            # Skip if symbol not in stocks data
+            if symbol not in stocks_data:
+                continue
+            
+            stock_info = stocks_data[symbol]
+            token = stock_info.get("token")
+            exchange = stock_info.get("exchange")
+            
+            # Validate token and exchange
+            if not token or not exchange:
+                logger.warning(f"Missing token or exchange for {symbol}")
+                continue
+            
+            # Fetch stock LTP data
+            ltp_resp = smart_api.ltpData(exchange, symbol, token)
+            
+            if isinstance(ltp_resp, dict) and ltp_resp.get("status"):
+                data = ltp_resp.get("data", {})
+                
+                # Safely extract and normalize stock prices
+                ltp = max(float(data.get("ltp", 0) or 0), 0.01)
+                open_price = max(float(data.get("open", ltp) or ltp), 0.01)
+                high_price = max(float(data.get("high", ltp) or ltp), 0.01)
+                low_price = max(float(data.get("low", ltp) or ltp), 0.01)
+                previous_price = max(float(data.get("previous", ltp) or ltp), 0.01)
+                
+                results["stocks"][symbol] = {
+                    "ltp": ltp,
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "previous": previous_price,
+                    "volume": data.get("tradingSymbol", 0)
+                }
+                
+                # Fetch PCR data (using existing method with fallback)
+                try:
+                    all_pcr_values = fetch_pcr_data()
+                    if symbol in all_pcr_values:
+                        pcr_value = all_pcr_values[symbol]
+                        results["pcr"][symbol] = {
+                            "current": pcr_value,
+                            "trend": pcr_data.get(symbol, {}).get("trend", "NEUTRAL"),
+                            "strength": pcr_data.get(symbol, {}).get("strength", 0.0)
+                        }
+                except Exception as pcr_err:
+                    logger.warning(f"Error fetching PCR for {symbol}: {pcr_err}")
+                
+                # Fetch primary options
+                ce_key = stock_info.get("primary_ce")
+                pe_key = stock_info.get("primary_pe")
+                
+                option_keys = [key for key in [ce_key, pe_key] if key is not None]
+                
+                for option_key in option_keys:
+                    if option_key in options_data:
+                        option_info = options_data[option_key]
+                        option_token = option_info.get("token")
+                        option_exchange = option_info.get("exchange")
+                        
+                        if option_token and option_exchange:
+                            option_ltp_resp = smart_api.ltpData(option_exchange, option_info.get("symbol"), option_token)
+                            
+                            if isinstance(option_ltp_resp, dict) and option_ltp_resp.get("status"):
+                                option_data = option_ltp_resp.get("data", {})
+                                
+                                # Safely extract and normalize option prices
+                                option_ltp = max(float(option_data.get("ltp", 0) or 0), 0.01)
+                                option_open = max(float(option_data.get("open", option_ltp) or option_ltp), 0.01)
+                                option_high = max(float(option_data.get("high", option_ltp) or option_ltp), 0.01)
+                                option_low = max(float(option_data.get("low", option_ltp) or option_ltp), 0.01)
+                                
+                                results["options"][option_key] = {
+                                    "ltp": option_ltp,
+                                    "open": option_open,
+                                    "high": option_high,
+                                    "low": option_low,
+                                    "symbol": option_info.get("symbol"),
+                                    "option_type": option_info.get("option_type"),
+                                    "strike": option_info.get("strike")
+                                }
+            
+            # Small delay to respect API limits
+            time.sleep(0.1)
+        
+        except Exception as e:
+            logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+    
+    return results
 
+def update_all_data_comprehensive():
+    """
+    Comprehensive update of stocks, options, and PCR data
+    """
+    global stocks_data, options_data, pcr_data, ui_data_store
+    
+    # Skip if not connected to broker
+    if not broker_connected:
+        return
+    
+    # Get all symbols to update
+    symbols_to_update = list(stocks_data.keys())
+    
+    # Process in batches of BULK_FETCH_SIZE to respect API limits
+    for i in range(0, len(symbols_to_update), BULK_FETCH_SIZE):
+        batch = symbols_to_update[i:i+BULK_FETCH_SIZE]
+        
+        # Fetch comprehensive data for this batch
+        bulk_results = fetch_bulk_data_comprehensive(batch)
+        
+        # Update PCR data first
+        for symbol, pcr_data_item in bulk_results.get("pcr", {}).items():
+            if symbol not in pcr_data:
+                pcr_data[symbol] = {
+                    "history": deque(maxlen=PCR_HISTORY_LENGTH),
+                    "last_updated": datetime.now()
+                }
+            
+            # Update PCR values
+            current_pcr = pcr_data_item.get("current", 1.0)
+            pcr_data[symbol]["current"] = current_pcr
+            pcr_data[symbol]["history"].append(current_pcr)
+            pcr_data[symbol]["trend"] = pcr_data_item.get("trend", "NEUTRAL")
+            pcr_data[symbol]["strength"] = pcr_data_item.get("strength", 0.0)
+            
+            # Recalculate trend and strength
+            determine_pcr_trend(symbol)
+            calculate_pcr_strength(symbol)
+        
+        # Update stocks
+        for symbol, data in bulk_results.get("stocks", {}).items():
+            if symbol in stocks_data and data:
+                stock_info = stocks_data[symbol]
+                
+                previous_ltp = stock_info["ltp"]
+                
+                # Update stock data
+                stock_info.update({
+                    "ltp": data.get("ltp"),
+                    "open": data.get("open"),
+                    "high": data.get("high"),
+                    "low": data.get("low"),
+                    "previous": data.get("previous")
+                })
+                
+                # Calculate movement and change percentages
+                if previous_ltp is not None and previous_ltp > 0:
+                    stock_info["movement_pct"] = ((data.get("ltp", 0) - previous_ltp) / previous_ltp) * 100
+                
+                if stock_info.get("open") and stock_info["open"] > 0:
+                    stock_info["change_percent"] = ((data.get("ltp", 0) - stock_info["open"]) / stock_info["open"]) * 100
+                
+                # Add to price history
+                timestamp = pd.Timestamp.now()
+                
+                new_data = {
+                    'timestamp': timestamp,
+                    'price': data.get("ltp", 0),
+                    'volume': data.get("volume", 0),
+                    'open': stock_info.get("open", data.get("ltp", 0)),
+                    'high': stock_info.get("high", data.get("ltp", 0)),
+                    'low': stock_info.get("low", data.get("ltp", 0))
+                }
+                
+                with price_history_lock:
+                    stock_info["price_history"] = pd.concat([
+                        stock_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit price history size
+                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                
+                # Update volatility
+                if previous_ltp is not None and previous_ltp > 0:
+                    pct_change = (data.get("ltp", 0) - previous_ltp) / previous_ltp * 100
+                    update_volatility(symbol, pct_change)
+                
+                # Predict strategy
+                predict_strategy_for_stock(symbol)
+        
+        # Update options
+        for option_key, data in bulk_results.get("options", {}).items():
+            if option_key in options_data and data:
+                option_info = options_data[option_key]
+                
+                # Update option data
+                option_info.update({
+                    "ltp": data.get("ltp"),
+                    "open": data.get("open"),
+                    "high": data.get("high"),
+                    "low": data.get("low")
+                })
+                
+                # Add to price history
+                timestamp = pd.Timestamp.now()
+                
+                new_data = {
+                    'timestamp': timestamp,
+                    'price': data.get("ltp", 0),
+                    'open': option_info.get("open", data.get("ltp", 0)),
+                    'high': option_info.get("high", data.get("ltp", 0)),
+                    'low': option_info.get("low", data.get("ltp", 0))
+                }
+                
+                with price_history_lock:
+                    option_info["price_history"] = pd.concat([
+                        option_info["price_history"], 
+                        pd.DataFrame([new_data])
+                    ], ignore_index=True)
+                    
+                    # Limit price history size
+                    if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                        option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+                
+                # Regenerate option signals
+                generate_option_signals(option_key)
+        
+        # Update market sentiment after processing all symbols
+        update_market_sentiment()
+        
+        # Short delay between batch requests
+        time.sleep(0.2)
 def fetch_data_periodically():
     """Main function to fetch data periodically with smart retry logic."""
     global dashboard_initialized, data_thread_started, broker_error_message
@@ -5283,7 +5534,8 @@ def fetch_data_periodically():
             if broker_connected:
                 # Refresh session if needed
                 refresh_session_if_needed()
-                
+               
+                update_all_data_comprehensive()
                 # Update all stocks using bulk API
                 update_all_stocks()
                 
@@ -5327,6 +5579,148 @@ def fetch_data_periodically():
         except Exception as e:
             logger.error(f"Error in fetch_data_periodically: {e}", exc_info=True)
             time.sleep(1)
+
+@app.callback(
+    Output('ui-data-store', 'data'),
+    [Input('fast-interval', 'n_intervals')],
+    [State('ui-data-store', 'data')]
+)
+def update_ui_data_store_comprehensive(n_intervals, previous_data):
+    """
+    Comprehensive UI data store update with improved data preparation
+    """
+    result = {
+        'connection': {
+            'status': 'connected' if broker_connected else 'disconnected',
+            'message': broker_error_message or '',
+            'last_connection': last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never',
+            'timestamp': datetime.now().strftime('%H:%M:%S.%f')
+        },
+        'stocks': {},
+        'options': {},
+        'pcr': {},
+        'performance': {
+            'total_pnl': trading_state.total_pnl,
+            'daily_pnl': trading_state.daily_pnl,
+            'win_rate': (trading_state.wins / (trading_state.wins + trading_state.losses)) * 100 if (trading_state.wins + trading_state.losses) > 0 else 0,
+            'trades_today': trading_state.trades_today
+        },
+        'strategies': strategy_settings.copy(),
+        'sentiment': market_sentiment.copy()
+    }
+    
+    # Prepare stock data
+    for symbol, stock_info in stocks_data.items():
+        # Prepare stock data for UI
+        result['stocks'][symbol] = {
+            'price': stock_info.get("ltp"),
+            'change': stock_info.get("change_percent", 0),
+            'change_direction': 'up' if stock_info.get("change_percent", 0) > 0 else 'down' if stock_info.get("change_percent", 0) < 0 else 'none',
+            'ohlc': {
+                'open': stock_info.get("open"),
+                'high': stock_info.get("high"),
+                'low': stock_info.get("low"),
+                'previous': stock_info.get("previous")
+            },
+            'last_updated': stock_info.get("last_updated", datetime.now()).strftime('%H:%M:%S'),
+            'support_levels': stock_info.get("support_levels", []),
+            'resistance_levels': stock_info.get("resistance_levels", []),
+            'sentiment': market_sentiment.get(symbol, "NEUTRAL")
+        }
+        
+        # Prepare PCR data
+        if symbol in pcr_data:
+            result['pcr'][symbol] = {
+                'current': pcr_data[symbol].get('current', 1.0),
+                'trend': pcr_data[symbol].get('trend', 'NEUTRAL'),
+                'strength': pcr_data[symbol].get('strength', 0.0)
+            }
+        
+        # Prepare option data
+        result['options'][symbol] = {}
+        
+        # CE Option
+        ce_key = stock_info.get("primary_ce")
+        if ce_key and ce_key in options_data:
+            ce_option = options_data[ce_key]
+            result['options'][symbol]['ce'] = {
+                'symbol': ce_option.get("symbol"),
+                'strike': ce_option.get("strike"),
+                'price': ce_option.get("ltp"),
+                'signal': ce_option.get("signal", 0),
+                'strength': ce_option.get("strength", 0),
+                'trend': ce_option.get("trend", "NEUTRAL")
+            }
+        
+        # PE Option
+        pe_key = stock_info.get("primary_pe")
+        if pe_key and pe_key in options_data:
+            pe_option = options_data[pe_key]
+            result['options'][symbol]['pe'] = {
+                'symbol': pe_option.get("symbol"),
+                'strike': pe_option.get("strike"),
+                'price': pe_option.get("ltp"),
+                'signal': pe_option.get("signal", 0),
+                'strength': pe_option.get("strength", 0),
+                result['trading_signals'] = {
+        'news_signals': [
+            {
+                'stock': signal.get('stock'),
+                'action': signal.get('action'),
+                'confidence': signal.get('confidence', 0),
+                'timestamp': signal.get('timestamp', datetime.now()).strftime('%H:%M:%S')
+            } for signal in news_data.get("trading_signals", [])
+        ]
+    }
+    
+    # Prepare active trades information
+    result['active_trades'] = []
+    for option_key, is_active in trading_state.active_trades.items():
+        if is_active and option_key in options_data:
+            option_info = options_data[option_key]
+            trade_details = {
+                'option_key': option_key,
+                'symbol': option_info.get('parent_symbol'),
+                'option_type': option_info.get('option_type'),
+                'strike': option_info.get('strike'),
+                'entry_price': trading_state.entry_price.get(option_key),
+                'current_price': option_info.get('ltp'),
+                'entry_time': trading_state.entry_time.get(option_key),
+                'strategy': trading_state.strategy_type.get(option_key),
+                'quantity': trading_state.quantity.get(option_key)
+            }
+            result['active_trades'].append(trade_details)
+    
+    # Volatility information
+    result['volatility'] = {
+        symbol: volatility_data.get(symbol, {}).get('current', 0)
+        for symbol in stocks_data.keys()
+    }
+    
+    # News information
+    result['news'] = {
+        'items': [
+            {
+                'title': item.get('title', ''),
+                'source': item.get('source', ''),
+                'timestamp': item.get('timestamp', datetime.now()).strftime('%H:%M:%S')
+            } for item in news_data.get('items', [])[:5]  # Limit to 5 most recent news items
+        ],
+        'last_updated': news_data.get('last_updated', datetime.now()).strftime('%H:%M:%S')
+    }
+    
+    # Predicted strategies
+    result['predicted_strategies'] = {
+        symbol: {
+            'strategy': stock_info.get('predicted_strategy'),
+            'confidence': stock_info.get('strategy_confidence', 0),
+            'score': stock_info.get('strategy_score', 0)
+        }
+        for symbol, stock_info in stocks_data.items()
+        if stock_info.get('predicted_strategy')
+    }
+    
+    return result
 # ============ Dashboard UI ============
 # Define a modern color scheme for the dashboard
 COLOR_SCHEME = {
