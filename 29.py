@@ -4259,21 +4259,32 @@ def update_broker_status(n_intervals, ui_data):
     [Input('medium-interval', 'n_intervals')]
 )
 def update_stock_cards(n_intervals):
-    """Update stock cards container with current stock data"""
-    stock_cards = []
-    
+    """Update stock cards container with current stock data - two cards per row"""
     # Get list of stocks sorted by type (INDEX first, then STOCK)
     sorted_stocks = sorted(
         stocks_data.keys(),
         key=lambda s: 0 if stocks_data[s].get("type") == "INDEX" else 1
     )
     
-    # Create a card for each stock
-    for symbol in sorted_stocks:
-        stock_cards.append(create_stock_option_card(symbol))
+    # Create rows with two cards each
+    rows = []
+    current_row = []
     
-    return stock_cards
-
+    for i, symbol in enumerate(sorted_stocks):
+        # Create card for this stock
+        card = create_stock_option_card(symbol)
+        current_row.append(dbc.Col(card, width=6))
+        
+        # Start a new row after every 2 cards or at the end
+        if len(current_row) == 2 or i == len(sorted_stocks) - 1:
+            # If this is the last card and we have only one in the row, add empty column
+            if len(current_row) == 1:
+                current_row.append(dbc.Col(width=6))
+                
+            rows.append(dbc.Row(current_row, className="mb-2"))
+            current_row = []
+    
+    return rows
 # Stock data callbacks
 @app.callback(
     [Output({"type": "stock-price", "index": MATCH}, "children"),
@@ -4399,7 +4410,6 @@ def update_pe_option_data(n_intervals, id_dict, ui_data):
     """Update put option price and related data"""
     return update_option_data(n_intervals, id_dict, ui_data, "pe")
 
-# Helper function for updating option data
 def update_option_data(n_intervals, id_dict, ui_data, option_type):
     """Update option price and related data"""
     if not ui_data or 'options' not in ui_data:
@@ -4411,6 +4421,8 @@ def update_option_data(n_intervals, id_dict, ui_data, option_type):
     
     option_data = ui_data['options'][symbol][option_type]
     
+    # Simply use the raw symbol from your data source, no formatting needed
+    strike_display = option_data.get('symbol', 'N/A') 
     # Prepare price display
     price = option_data.get('price')
     if price is None:
@@ -5719,7 +5731,6 @@ def create_performance_card():
     style=custom_css["card"],
     className="mb-3 border-warning h-100"
     )
-
 def create_active_trades_card():
     return dbc.Card([
         dbc.CardHeader([
@@ -5888,32 +5899,31 @@ def create_layout():
 # Main application layout with improved UI
 app.layout = create_layout()
 
-# ============ Dashboard Callbacks ============
-# Update UI Data Store to reduce blinking
 @app.callback(
     Output('ui-data-store', 'data'),
     [Input('fast-interval', 'n_intervals')],
     [State('ui-data-store', 'data')]
 )
 def update_ui_data_store(n_intervals, previous_data):
-    """Centralized data store updates with throttling to avoid UI blinking"""
+    """Centralized data store updates with improved debugging"""
     # If no previous data, create empty dictionary
     if previous_data is None:
         previous_data = {}
     
-    # Create result dictionary
+    # Force update even with minor changes
     result = {
         'connection': {
             'status': 'connected' if broker_connected else 'disconnected',
             'message': broker_error_message or '',
-            'last_connection': last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never'
+            'last_connection': last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never',
+            'timestamp': datetime.now().strftime('%H:%M:%S.%f')  # Add precise timestamp for debugging
         },
         'stocks': {},
         'options': {},
         'pcr': {},
         'sentiment': market_sentiment.copy(),
-        'predicted_strategies': previous_data.get('predicted_strategies', {}),
-        'news': previous_data.get('news', {}),
+        'predicted_strategies': ui_data_store.get('predicted_strategies', {}),
+        'news': ui_data_store.get('news', {}),
         'trading': {
             'active_trades': sum(1 for v in trading_state.active_trades.values() if v),
             'total_pnl': trading_state.total_pnl,
@@ -5922,234 +5932,72 @@ def update_ui_data_store(n_intervals, previous_data):
             'wins': trading_state.wins,
             'losses': trading_state.losses
         },
-        'strategies': strategy_settings.copy()
+        'strategies': strategy_settings.copy(),
+        'debug': {
+            'data_thread_started': data_thread_started,
+            'dashboard_initialized': dashboard_initialized,
+            'broker_connected': broker_connected
+        }
     }
     
-    # Process stock data with reduced update frequency
+    # Add direct values from stocks_data and options_data, bypassing throttling
     for symbol in stocks_data:
         stock_info = stocks_data[symbol]
-        
-        # Get current values
-        ltp = stock_info.get("ltp")
-        last_updated = stock_info.get("last_updated")
-        last_updated_str = last_updated.strftime('%H:%M:%S') if last_updated else 'N/A'
-        
-        # Check against previous data
-        prev_data = previous_data.get('stocks', {}).get(symbol, {})
-        prev_price = prev_data.get('price')
-        prev_update = prev_data.get('last_updated')
-        
-        # Determine if we need to force an update
-        force_update = (prev_update != last_updated_str)
-        
-        # Calculate change direction for highlighting
-        change_direction = 'none'
-        if prev_price is not None and ltp is not None and ltp != prev_price:
-            change_direction = 'up' if ltp > prev_price else 'down'
-            
-        # Calculate percentage change
-        if ltp is not None and ltp > 0:
-            # Calculate from previous close or opening price
-            previous = stock_info.get("previous") or stock_info.get("open") or ltp
-            if previous > 0:
-                change_percent = ((ltp - previous) / previous) * 100
-            else:
-                change_percent = 0
-        else:
-            change_percent = 0
-        
-        # Create stock data entry
-        stock_data = {
-            'price': ltp,
-            'change': change_percent,
+        result['stocks'][symbol] = {
+            'price': stock_info.get("ltp"),
+            'change': stock_info.get("change_percent", 0),
             'ohlc': {
                 'open': stock_info.get("open"),
                 'high': stock_info.get("high"),
                 'low': stock_info.get("low"),
                 'previous': stock_info.get("previous")
             },
-            'last_updated': last_updated_str,
-            'has_changed': force_update or (prev_price is not None and ltp != prev_price),
-            'change_direction': change_direction
+            'last_updated': stock_info.get("last_updated").strftime('%H:%M:%S') if stock_info.get("last_updated") else 'N/A',
+            'change_direction': 'none',  # Default, will be calculated in UI
+            'support_levels': stock_info.get("support_levels", []),
+            'resistance_levels': stock_info.get("resistance_levels", [])
         }
         
-        # Apply throttling to reduce updates
-        if not force_update and 'stocks' in previous_data and symbol in previous_data['stocks']:
-            # Only update price if it has changed significantly
-            if ltp is not None and prev_price is not None:
-                # Calculate percentage difference
-                price_diff_pct = abs(ltp - prev_price) / max(ltp, prev_price) * 100
-                
-                # If difference is tiny, keep previous price to avoid blinking
-                if price_diff_pct < 0.01:  # Less than 0.01% change
-                    stock_data['price'] = prev_price
-                    stock_data['has_changed'] = False
-                    stock_data['change_direction'] = 'none'
-                
-                # Only update OHLC data when necessary
-                if price_diff_pct < 0.05:  # Less than 0.05% change
-                    stock_data['ohlc'] = prev_data.get('ohlc', stock_data['ohlc'])
-                    
-                # Keep previous change value for small changes
-                prev_change = prev_data.get('change')
-                if prev_change is not None and abs(change_percent - prev_change) < 0.01:
-                    stock_data['change'] = prev_change
+        # Add PCR data
+        if symbol in pcr_data:
+            result['pcr'][symbol] = {
+                'current': pcr_data[symbol].get('current', 1.0),
+                'trend': pcr_data[symbol].get('trend', 'NEUTRAL'),
+                'strength': pcr_data[symbol].get('strength', 0.0)
+            }
         
-        # Store the data
-        result['stocks'][symbol] = stock_data
-    
-    # Process option data with change detection
-    for symbol in stocks_data:
+        # Add option data
         result['options'][symbol] = {}
-        prev_option_data = previous_data.get('options', {}).get(symbol, {})
         
         # Process CE options
-        ce_key = stocks_data[symbol].get("primary_ce")
+        ce_key = stock_info.get("primary_ce")
         if ce_key and ce_key in options_data:
             ce_option = options_data[ce_key]
-            
-            # Get current values
-            ce_price = ce_option.get("ltp")
-            
-            # Get previous values
-            prev_ce = prev_option_data.get('ce', {})
-            prev_ce_price = prev_ce.get('price')
-            
-            # Determine change direction
-            change_direction = 'none'
-            if prev_ce_price is not None and ce_price is not None and ce_price != prev_ce_price:
-                change_direction = 'up' if ce_price > prev_ce_price else 'down'
-                
-            # Create option data
-            ce_data = {
-                'strike': ce_option.get("strike", "N/A"),
-                'price': ce_price,
+            result['options'][symbol]['ce'] = {
+                'symbol': ce_option.get("symbol", "N/A"),  # Use the new format function
+                'price': ce_option.get("ltp"),
                 'signal': ce_option.get("signal", 0),
                 'strength': ce_option.get("strength", 0),
                 'trend': ce_option.get("trend", "NEUTRAL"),
                 'using_fallback': ce_option.get("using_fallback", False),
-                'has_changed': prev_ce_price is not None and ce_price != prev_ce_price,
-                'change_direction': change_direction
+                'option_key': ce_key  # Add the full key for reference
             }
-            
-            # Apply throttling
-            if prev_ce_price is not None and ce_price is not None:
-                # Calculate percentage difference
-                price_diff_pct = abs(ce_price - prev_ce_price) / max(ce_price, prev_ce_price) * 100
-                
-                # If difference is tiny, keep previous price to avoid blinking
-                if price_diff_pct < 0.01:  # Less than 0.01% change
-                    ce_data['price'] = prev_ce_price
-                    ce_data['has_changed'] = False
-                    ce_data['change_direction'] = 'none'
-                
-                # Keep previous signal/trend values for small price changes
-                if price_diff_pct < 0.1:  # Less than 0.1% change
-                    ce_data['signal'] = prev_ce.get('signal', ce_data['signal'])
-                    ce_data['strength'] = prev_ce.get('strength', ce_data['strength'])
-                    ce_data['trend'] = prev_ce.get('trend', ce_data['trend'])
-            
-            result['options'][symbol]['ce'] = ce_data
-        elif 'ce' in prev_option_data:
-            # Keep previous data if no current data
-            result['options'][symbol]['ce'] = prev_option_data['ce']
         
-        # Process PE options (similar logic to CE)
-        pe_key = stocks_data[symbol].get("primary_pe")
+        # Process PE options
+        pe_key = stock_info.get("primary_pe")
         if pe_key and pe_key in options_data:
             pe_option = options_data[pe_key]
-            
-            # Get current values
-            pe_price = pe_option.get("ltp")
-            
-            # Get previous values
-            prev_pe = prev_option_data.get('pe', {})
-            prev_pe_price = prev_pe.get('price')
-            
-            # Determine change direction
-            change_direction = 'none'
-            if prev_pe_price is not None and pe_price is not None and pe_price != prev_pe_price:
-                change_direction = 'up' if pe_price > prev_pe_price else 'down'
-                
-            # Create option data
-            pe_data = {
-                'strike': pe_option.get("strike", "N/A"),
-                'price': pe_price,
+            result['options'][symbol]['pe'] = {
+                'symbol': pe_option.get("symbol", "N/A"),  # ← Use this directly
+                'price': pe_option.get("ltp"),
                 'signal': pe_option.get("signal", 0),
                 'strength': pe_option.get("strength", 0),
                 'trend': pe_option.get("trend", "NEUTRAL"),
                 'using_fallback': pe_option.get("using_fallback", False),
-                'has_changed': prev_pe_price is not None and pe_price != prev_pe_price,
-                'change_direction': change_direction
+                'option_key': pe_key  # Add the full key for reference
             }
-            
-            # Apply throttling
-            if prev_pe_price is not None and pe_price is not None:
-                # Calculate percentage difference
-                price_diff_pct = abs(pe_price - prev_pe_price) / max(pe_price, prev_pe_price) * 100
-                
-                # If difference is tiny, keep previous price to avoid blinking
-                if price_diff_pct < 0.01:  # Less than 0.01% change
-                    pe_data['price'] = prev_pe_price
-                    pe_data['has_changed'] = False
-                    pe_data['change_direction'] = 'none'
-                
-                # Keep previous signal/trend values for small price changes
-                if price_diff_pct < 0.1:  # Less than 0.1% change
-                    pe_data['signal'] = prev_pe.get('signal', pe_data['signal'])
-                    pe_data['strength'] = prev_pe.get('strength', pe_data['strength'])
-                    pe_data['trend'] = prev_pe.get('trend', pe_data['trend'])
-            
-            result['options'][symbol]['pe'] = pe_data
-        elif 'pe' in prev_option_data:
-            # Keep previous data if no current data
-            result['options'][symbol]['pe'] = prev_option_data['pe']
     
-    # Process PCR data with stability
-    for symbol, data in pcr_data.items():
-        if symbol in stocks_data:
-            # Get current PCR data
-            current_pcr = {
-                'current': data['current'],
-                'trend': data['trend'],
-                'strength': data['strength']
-            }
-            
-            # Get previous PCR data
-            prev_pcr = previous_data.get('pcr', {}).get(symbol, {})
-            
-            # Apply throttling for stability
-            if prev_pcr:
-                # Only update if significant change or trend change
-                if (abs(current_pcr['current'] - prev_pcr.get('current', 0)) < 0.01 and
-                    current_pcr['trend'] == prev_pcr.get('trend')):
-                    current_pcr = prev_pcr
-            
-            result['pcr'][symbol] = current_pcr
-    
-    # Apply throttling to predicted strategies to reduce updates
-    for symbol, strategy_data in stocks_data.items():
-        predicted = strategy_data.get("predicted_strategy")
-        confidence = strategy_data.get("strategy_confidence", 0)
-        
-        if predicted and confidence > 0:
-            prev_strategy = previous_data.get('predicted_strategies', {}).get(symbol, {})
-            
-            # Only update if strategy or confidence changes significantly
-            if (prev_strategy and
-                prev_strategy.get('strategy') == predicted and
-                abs(prev_strategy.get('confidence', 0) - confidence) < 0.05):
-                # Keep previous data
-                result['predicted_strategies'][symbol] = prev_strategy
-            else:
-                # Update with new data
-                result['predicted_strategies'][symbol] = {
-                    'strategy': predicted,
-                    'confidence': confidence
-                }
-    
-    return result
-# Main function
+    return result# Main function
 def main():
     """Main entry point with error handling"""
     try:
