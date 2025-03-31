@@ -1571,7 +1571,6 @@ def update_pcr_data(symbol):
     # If all else fails, use the previous value
     return False
 
-@rate_limited
 def fetch_option_data(option_key):
     """
     Fetch data for a single option with comprehensive error handling and fallbacks
@@ -1595,271 +1594,16 @@ def fetch_option_data(option_key):
         logger.warning(f"Broker not connected, skipping update for {option_key}")
         return False
     
-    # Check if this option was recently updated (within last 5 seconds)
+    # Check if this option was recently updated (within last 5 seconds) and has valid data
     last_update = option_info.get("last_updated")
-    if last_update and (datetime.now() - last_update).total_seconds() < 5:
-        logger.debug(f"Option {option_key} was recently updated, skipping")
+    if (last_update and (datetime.now() - last_update).total_seconds() < 5 and 
+        option_info.get("ltp") is not None and 
+        option_info.get("ltp") > 0 and
+        not option_info.get("using_fallback", False)):
+        logger.debug(f"Option {option_key} has recent valid data, skipping update")
         return True
     
-    try:
-        # Extract essential option details
-        exchange = option_info.get("exchange", "NFO")
-        token = option_info.get("token")
-        symbol = option_info.get("symbol")
-        parent_symbol = option_info.get("parent_symbol")
-        option_type = option_info.get("option_type", "").lower()
-        strike = option_info.get("strike")
-        expiry = option_info.get("expiry")
-        
-        # Skip invalid options
-        if not token or not symbol:
-            logger.warning(f"Skipping option {option_key}: Missing token or symbol")
-            return False
-        
-        # Use parent stock price and strike price for fallback calculations
-        parent_price = None
-        strike_price = float(strike) if strike else 0
-        if parent_symbol in stocks_data:
-            parent_price = stocks_data[parent_symbol].get("ltp")
-        
-        # Track if we're using a fallback price
-        using_fallback = False
-        fallback_reason = None
-        
-        try:
-            # Attempt to fetch LTP data
-            logger.info(f"Fetching LTP for {symbol} (Token: {token}, Exchange: {exchange})")
-            
-            ltp_resp = smart_api.ltpData(exchange, symbol, token)
-            
-            # Analyze response with detailed logging
-            if isinstance(ltp_resp, dict):
-                if not ltp_resp.get("status"):
-                    # Handle error cases
-                    error_msg = ltp_resp.get("message", "Unknown error")
-                    error_code = ltp_resp.get("errorcode", "N/A")
-                    logger.warning(f"LTP fetch failed for {symbol}. Error: {error_msg} (Code: {error_code})")
-                    
-                    # Check specific error types
-                    if "token" in error_msg.lower() or "symbol" in error_msg.lower() or error_code == "AB1018":
-                        # Token or symbol issue - try to recover
-                        logger.info(f"Attempting to refresh token for {symbol}")
-                        
-                        # Try to search for the symbol directly
-                        if option_info.get("is_fallback", False):
-                            # For fallback tokens, we need a more advanced search
-                            new_token_info = search_and_validate_option_token(
-                                parent_symbol, strike_price, option_type, expiry
-                            )
-                            
-                            if new_token_info and new_token_info.get("token") != token:
-                                new_token = new_token_info.get("token")
-                                new_symbol = new_token_info.get("symbol", symbol)
-                                
-                                logger.info(f"Found new token for {symbol}: {new_token}")
-                                
-                                # Update the option info
-                                option_info["token"] = new_token
-                                option_info["symbol"] = new_symbol
-                                option_info["is_fallback"] = new_token_info.get("is_fallback", False)
-                                
-                                # Try again with the new token
-                                try:
-                                    new_resp = smart_api.ltpData(exchange, new_symbol, new_token)
-                                    if new_resp.get("status"):
-                                        ltp_resp = new_resp
-                                        logger.info(f"Successfully fetched data with new token")
-                                    else:
-                                        logger.warning(f"Still failed with new token: {new_resp}")
-                                        using_fallback = True
-                                        fallback_reason = "Token refresh failed"
-                                except Exception as e:
-                                    logger.warning(f"Error using new token: {e}")
-                                    using_fallback = True
-                                    fallback_reason = "Error with new token"
-                            else:
-                                using_fallback = True
-                                fallback_reason = "No new token found"
-                        else:
-                            # For non-fallback tokens, search for the symbol in CSV
-                            using_fallback = True
-                            fallback_reason = "Could not find token in CSV"
-                    else:
-                        # Other types of errors
-                        using_fallback = True
-                        fallback_reason = error_msg
-                    
-                    # If we need to use fallback, calculate theoretical price
-                    if using_fallback:
-                        ltp = None
-                        if parent_price and strike_price:
-                            # More sophisticated theoretical option pricing
-                            time_to_expiry = 7/365  # Default 7 days to expiry
-                            volatility = 0.3  # Default volatility estimate (30%)
-                            
-                            if option_type == "ce":
-                                # Simple call option pricing - intrinsic value + time value
-                                intrinsic = max(0, parent_price - strike_price)
-                                time_value = parent_price * volatility * time_to_expiry
-                                ltp = max(intrinsic + time_value, 5)
-                            else:  # PE
-                                # Simple put option pricing - intrinsic value + time value
-                                intrinsic = max(0, strike_price - parent_price)
-                                time_value = parent_price * volatility * time_to_expiry
-                                ltp = max(intrinsic + time_value, 5)
-                                
-                            logger.info(f"Using theoretical price for {symbol}: {ltp} (Reason: {fallback_reason})")
-                        else:
-                            # Use previous price or default
-                            ltp = option_info.get("ltp", 50)
-                            logger.info(f"Using previous/default price for {symbol}: {ltp} (Reason: {fallback_reason})")
-                else:
-                    # Extract data with validation
-                    data = ltp_resp.get("data", {})
-                    ltp = float(data.get("ltp", 0) or 0)
-                    if ltp <= 0:
-                        # Try theoretical price
-                        using_fallback = True
-                        fallback_reason = "API returned zero/negative price"
-                        
-                        if parent_price and strike_price:
-                            if option_type == "ce":
-                                ltp = max(parent_price - strike_price, 5) if parent_price > strike_price else 5
-                            else:  # PE
-                                ltp = max(strike_price - parent_price, 5) if strike_price > parent_price else 5
-                        else:
-                            ltp = option_info.get("ltp", 50)
-                    else:
-                        logger.info(f"Valid LTP received for {symbol}: {ltp}")
-            else:
-                # Handle invalid response format
-                logger.error(f"Invalid response format for {symbol}")
-                using_fallback = True
-                fallback_reason = "Invalid API response format"
-                
-                if parent_price and strike_price:
-                    if option_type == "ce":
-                        ltp = max(parent_price - strike_price, 5) if parent_price > strike_price else 5
-                    else:  # PE
-                        ltp = max(strike_price - parent_price, 5) if strike_price > parent_price else 5
-                else:
-                    ltp = option_info.get("ltp", 50)
-            
-            # Ensure valid, non-zero LTP
-            ltp = max(float(ltp), 0.01)
-        
-        except Exception as fetch_err:
-            # Comprehensive error logging
-            logger.error(f"Critical error fetching LTP for {symbol}: {fetch_err}", exc_info=True)
-            using_fallback = True
-            fallback_reason = str(fetch_err)
-            
-            # Fallback to parent stock's price
-            if parent_symbol and parent_symbol in stocks_data:
-                stock_price = stocks_data[parent_symbol].get("ltp", 50)
-                strike = float(option_info.get("strike", 0))
-                
-                # Simple option pricing model as fallback
-                if strike > 0:
-                    if option_type == "ce":  # Call option
-                        ltp = max(stock_price - strike, 5) if stock_price > strike else 5
-                    else:  # Put option
-                        ltp = max(strike - stock_price, 5) if strike > stock_price else 5
-                else:
-                    ltp = 50
-            else:
-                ltp = 50
-                logger.warning(f"No parent stock data for fallback pricing, using default price: {ltp}")
-        
-        # Final validation to ensure we have a valid price
-        ltp = max(float(ltp), 0.01)
-        
-        # Update option data with safe calculations
-        current_open = option_info.get("open")
-        current_high = option_info.get("high")
-        current_low = option_info.get("low")
-        
-        # Update option info
-        option_info.update({
-            "ltp": ltp,
-            "open": current_open if current_open is not None and current_open > 0 else ltp,
-            "high": max(current_high if current_high is not None else 0, ltp),
-            "low": min(current_low if current_low is not None and current_low > 0 else float('inf'), ltp),
-            "previous": option_info.get("ltp", ltp),  # Use previous LTP as the previous price
-            "change_percent": ((ltp / option_info.get("ltp", ltp)) - 1) * 100 if option_info.get("ltp") else 0,
-            "last_updated": datetime.now(),
-            "using_fallback": using_fallback,
-            "fallback_reason": fallback_reason if using_fallback else None
-        })
-        
-        # Add to price history
-        timestamp = pd.Timestamp.now()
-        
-        new_data = {
-            'timestamp': timestamp,
-            'price': ltp,
-            'volume': 0,
-            'open_interest': 0,
-            'change': option_info.get("change_percent", 0),
-            'open': option_info["open"],
-            'high': option_info["high"],
-            'low': option_info["low"],
-            'is_fallback': using_fallback
-        }
-        
-        # Thread-safe price history update
-        with price_history_lock:
-            # Ensure all columns exist
-            for col in new_data.keys():
-                if col not in option_info["price_history"].columns:
-                    option_info["price_history"][col] = np.nan
-            
-            option_info["price_history"] = pd.concat([
-                option_info["price_history"], 
-                pd.DataFrame([new_data])
-            ], ignore_index=True)
-            
-            # Limit history size
-            if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-        
-        # Generate signals with fallback
-        try:
-            generate_option_signals(option_key)
-        except Exception as signal_err:
-            logger.warning(f"Signal generation failed for {option_key}: {signal_err}")
-        
-        # Update last data update timestamp
-        last_data_update["options"][option_key] = datetime.now()
-        
-        # Update UI data store for primary options
-        if parent_symbol and option_type:
-            # Check if this is the primary option for the stock
-            primary_option_key = stocks_data.get(parent_symbol, {}).get(f"primary_{option_type}")
-            
-            if primary_option_key == option_key:
-                # Ensure the parent symbol exists in UI data store
-                if parent_symbol not in ui_data_store['options']:
-                    ui_data_store['options'][parent_symbol] = {}
-                
-                # Update UI data
-                ui_data_store['options'][parent_symbol][option_type] = {
-                    'strike': option_info.get("strike", "N/A"),
-                    'price': ltp,
-                    'signal': option_info.get("signal", 0),
-                    'strength': option_info.get("strength", 0),
-                    'trend': option_info.get("trend", "NEUTRAL"),
-                    'using_fallback': using_fallback
-                }
-                
-                logger.info(f"Updated UI data for {parent_symbol} {option_type} option")
-        
-        return True
-    
-    except Exception as main_err:
-        logger.error(f"Comprehensive error updating option {option_key}: {main_err}", exc_info=True)
-        return False
-
+    # Rest of your existing function...
 def update_all_options():
     """
     Update all options with a more efficient prioritized approach using caching
@@ -1880,7 +1624,7 @@ def update_all_options():
         parent_symbol = option_info.get("parent_symbol")
         option_type = option_info.get("option_type", "").lower()
         last_updated = option_info.get("last_updated")
-        last_updated_times[option_key] = last_updated
+        last_updated_times[option_key] = last_updated or datetime.min  # Use min datetime if None
         
         # Check if this is a primary option for any stock
         is_primary = False
@@ -1923,7 +1667,6 @@ def update_all_options():
     
     # Log overall update status
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
-
 def update_option_selection(force_update=False):
     """
     Update option selection for all stocks based on current prices
@@ -4133,7 +3876,113 @@ def generate_news_trading_signals(stock_mentions):
     trading_signals.sort(key=lambda x: x['confidence'], reverse=True)
     
     return trading_signals
+@app.callback(
+    [Output("broker-status", "children"),
+     Output("broker-status", "className"),
+     Output("connection-details", "children"),
+     Output("last-connection-time", "children")],
+    [Input('medium-interval', 'n_intervals')],
+    [State('ui-data-store', 'data')]
+)
+def update_broker_status(n_intervals, ui_data):
+    if ui_data and 'connection' in ui_data:
+        conn_data = ui_data['connection']
+        status = conn_data.get('status', 'disconnected')
+        message = conn_data.get('message', '')
+        last_conn = conn_data.get('last_connection', 'Never')
+        
+        if status == 'connected':
+            return "Connected", "badge bg-success", "", last_conn
+        else:
+            return "Disconnected", "badge bg-danger", message, last_conn
+    
+    # Default values if no data
+    return "Unknown", "badge bg-secondary", "", "Never"
 
+@app.callback(
+    Output("stock-cards-container", "children"),
+    [Input('medium-interval', 'n_intervals')]
+)
+def update_stock_cards(n_intervals):
+    """Update stock cards container with current stock data"""
+    stock_cards = []
+    
+    # Get list of stocks sorted by type (INDEX first, then STOCK)
+    sorted_stocks = sorted(
+        stocks_data.keys(),
+        key=lambda s: 0 if stocks_data[s].get("type") == "INDEX" else 1
+    )
+    
+    # Create a card for each stock
+    for symbol in sorted_stocks:
+        stock_cards.append(create_stock_option_card(symbol))
+    
+    return stock_cards
+
+# Stock data callbacks
+@app.callback(
+    [Output({"type": "stock-price", "index": MATCH}, "children"),
+     Output({"type": "stock-price", "index": MATCH}, "style"),
+     Output({"type": "stock-change", "index": MATCH}, "children"),
+     Output({"type": "stock-change", "index": MATCH}, "style"),
+     Output({"type": "stock-ohlc", "index": MATCH}, "children"),
+     Output({"type": "stock-last-update", "index": MATCH}, "children")],
+    [Input('fast-interval', 'n_intervals')],
+    [State({"type": "stock-price", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_stock_data(n_intervals, id_dict, ui_data):
+    """Update stock price and related data"""
+    if not ui_data or 'stocks' not in ui_data:
+        return "N/A", {}, "N/A", {}, "N/A", "Last update: N/A"
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['stocks']:
+        return "N/A", {}, "N/A", {}, "N/A", "Last update: N/A"
+    
+    stock_data = ui_data['stocks'][symbol]
+    
+    # Prepare price display
+    price = stock_data.get('price')
+    if price is None:
+        price_display = "N/A"
+        price_style = {}
+    else:
+        price_display = f"{price:.2f}"
+        # Set style based on change direction
+        change_dir = stock_data.get('change_direction', 'none')
+        if change_dir == 'up':
+            price_style = {"color": "#22bb33"}  # Green for up
+        elif change_dir == 'down':
+            price_style = {"color": "#bb2124"}  # Red for down
+        else:
+            price_style = {}
+    
+    # Prepare change percentage display
+    change_pct = stock_data.get('change', 0)
+    if change_pct > 0:
+        change_display = f"+{change_pct:.2f}%"
+        change_style = {"color": "#22bb33"}  # Green for positive
+    elif change_pct < 0:
+        change_display = f"{change_pct:.2f}%"
+        change_style = {"color": "#bb2124"}  # Red for negative
+    else:
+        change_display = "0.00%"
+        change_style = {}
+    
+    # Prepare OHLC display
+    ohlc = stock_data.get('ohlc', {})
+    open_price = ohlc.get('open')
+    high_price = ohlc.get('high')
+    low_price = ohlc.get('low')
+    prev_price = ohlc.get('previous')
+    
+    ohlc_display = f"O: {open_price:.2f} H: {high_price:.2f} L: {low_price:.2f} P: {prev_price:.2f}" if all(x is not None for x in [open_price, high_price, low_price, prev_price]) else "N/A"
+    
+    # Last update time
+    last_update = f"Last update: {stock_data.get('last_updated', 'N/A')}"
+    
+    return price_display, price_style, change_display, change_style, ohlc_display, last_update
 def add_news_mentioned_stocks():
     """Add stocks that are mentioned in news but not currently tracked"""
     if not news_data.get("mentions"):
@@ -4161,6 +4010,178 @@ def add_news_mentioned_stocks():
         if broker_connected:
             fetch_stock_data(stock)
 
+# Option data callbacks
+@app.callback(
+    [Output({"type": f"option-{option_type}-price", "index": MATCH}, "children"),
+     Output({"type": f"option-{option_type}-price", "index": MATCH}, "style"),
+     Output({"type": f"option-{option_type}-strike", "index": MATCH}, "children"),
+     Output({"type": f"option-{option_type}-signal", "index": MATCH}, "children"),
+     Output({"type": f"option-{option_type}-signal", "index": MATCH}, "className"),
+     Output({"type": f"option-{option_type}-strength", "index": MATCH}, "value"),
+     Output({"type": f"option-{option_type}-strength", "index": MATCH}, "color")],
+    [Input('fast-interval', 'n_intervals')],
+    [State({"type": f"option-{option_type}-price", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_option_data(n_intervals, id_dict, ui_data, option_type="ce"):
+    """Update option price and related data"""
+    if not ui_data or 'options' not in ui_data:
+        return "N/A", {}, "N/A", "NEUTRAL", "badge bg-secondary", 0, "secondary"
+    
+    symbol = id_dict["index"]
+    if symbol not in ui_data['options'] or option_type not in ui_data['options'][symbol]:
+        return "N/A", {}, "N/A", "NEUTRAL", "badge bg-secondary", 0, "secondary"
+    
+    option_data = ui_data['options'][symbol][option_type]
+    
+    # Prepare price display
+    price = option_data.get('price')
+    if price is None:
+        price_display = "N/A"
+        price_style = {}
+    else:
+        price_display = f"{price:.2f}"
+        # Set style based on change direction
+        change_dir = option_data.get('change_direction', 'none')
+        if change_dir == 'up':
+            price_style = {"color": "#22bb33"}  # Green for up
+        elif change_dir == 'down':
+            price_style = {"color": "#bb2124"}  # Red for down
+        else:
+            price_style = {}
+    
+    # Strike price
+    strike_display = option_data.get('strike', 'N/A')
+    
+    # Signal trend
+    trend = option_data.get('trend', 'NEUTRAL')
+    signal = option_data.get('signal', 0)
+    
+    # Determine badge class based on trend
+    if "BULLISH" in trend:
+        badge_class = "badge bg-success"
+    elif "BEARISH" in trend:
+        badge_class = "badge bg-danger"
+    else:
+        badge_class = "badge bg-secondary"
+    
+    # Signal strength
+    strength = option_data.get('strength', 0)
+    strength_pct = min(max(strength * 10, 0), 100)  # Convert to percentage (0-100)
+    
+    # Determine color based on signal
+    if signal > 0:
+        color = "success"  # Green for positive signal
+    elif signal < 0:
+        color = "danger"   # Red for negative signal
+    else:
+        color = "secondary"  # Grey for neutral
+    
+    return price_display, price_style, strike_display, trend, badge_class, strength_pct, color
+@app.callback(
+    Output("connection-details", "className"),
+    [Input("retry-connection-button", "n_clicks")],
+    prevent_initial_call=True
+)
+def retry_broker_connection(n_clicks):
+    """Force retry broker connection"""
+    if n_clicks:
+        # Reset connection retry time
+        global broker_connection_retry_time
+        broker_connection_retry_time = None
+        
+        # Force connection attempt
+        connect_to_broker()
+        
+        return "text-warning"
+    
+    return "text-muted small"
+
+@app.callback(
+    [Output("active-trades-container", "children"),
+     Output("active-trades-count", "children")],
+    [Input('medium-interval', 'n_intervals')],
+    [State('ui-data-store', 'data')]
+)
+def update_active_trades(n_intervals, ui_data):
+    """Update active trades display"""
+    active_trades_list = []
+    active_count = 0
+    
+    for option_key, is_active in trading_state.active_trades.items():
+        if is_active:
+            active_count += 1
+            
+            # Get option details
+            option_info = options_data.get(option_key, {})
+            parent_symbol = option_info.get("parent_symbol", "Unknown")
+            option_type = option_info.get("option_type", "Unknown")
+            strike = option_info.get("strike", "N/A")
+            current_price = option_info.get("ltp", 0)
+            
+            # Get trade details
+            entry_price = trading_state.entry_price.get(option_key, 0)
+            entry_time = trading_state.entry_time.get(option_key, datetime.now())
+            stop_loss = trading_state.stop_loss.get(option_key, 0)
+            target = trading_state.target.get(option_key, 0)
+            quantity = trading_state.quantity.get(option_key, 0)
+            strategy = trading_state.strategy_type.get(option_key, "Unknown")
+            
+            # Calculate P&L
+            pnl_amount = 0
+            pnl_pct = 0
+            if entry_price > 0 and current_price > 0:
+                if option_type == "CE":
+                    pnl_amount = (current_price - entry_price) * quantity
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                else:  # PE
+                    pnl_amount = (entry_price - current_price) * quantity
+                    pnl_pct = ((entry_price - current_price) / entry_price) * 100
+            
+            # Format duration
+            duration = datetime.now() - entry_time
+            minutes, seconds = divmod(duration.seconds, 60)
+            duration_str = f"{minutes}m {seconds}s"
+            
+            # Determine P&L color
+            pnl_color = "text-success" if pnl_amount > 0 else "text-danger" if pnl_amount < 0 else "text-muted"
+            
+            # Create trade card
+            trade_card = dbc.Card([
+                dbc.CardHeader([
+                    html.Span(f"{parent_symbol} {option_type} {strike}", className="fw-bold"),
+                    html.Span(f"Strategy: {strategy}", className="badge bg-info ms-2"),
+                    dbc.Button("Exit", id={"type": "exit-trade-btn", "index": option_key}, 
+                             color="danger", size="sm", className="float-end")
+                ]),
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            html.Div(f"Entry: {entry_price:.2f}", className="small"),
+                            html.Div(f"Current: {current_price:.2f}", className="small"),
+                            html.Div(f"Duration: {duration_str}", className="small text-muted"),
+                        ], width=4),
+                        dbc.Col([
+                            html.Div(f"SL: {stop_loss:.2f}", className="small text-danger"),
+                            html.Div(f"Target: {target:.2f}", className="small text-success"),
+                            html.Div(f"Qty: {quantity}", className="small text-muted"),
+                        ], width=4),
+                        dbc.Col([
+                            html.Div([
+                                "P&L: ",
+                                html.Span(f"{pnl_amount:.2f} ({pnl_pct:.2f}%)", className=pnl_color)
+                            ], className="fw-bold"),
+                        ], width=4)
+                    ])
+                ], className="py-2")
+            ], className="mb-2 shadow-sm")
+            
+            active_trades_list.append(trade_card)
+    
+    if active_count == 0:
+        active_trades_list = [html.Div("No active trades", className="text-muted text-center py-3")]
+    
+    return active_trades_list, str(active_count)
 def execute_news_based_trades():
     """Execute trades based on news analysis"""
     if not strategy_settings["NEWS_ENABLED"]:
