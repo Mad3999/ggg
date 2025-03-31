@@ -310,6 +310,7 @@ last_pcr_update = datetime.now() - timedelta(seconds=PCR_UPDATE_INTERVAL)
 last_news_update = datetime.now() - timedelta(seconds=NEWS_CHECK_INTERVAL)
 last_cleanup = datetime.now()
 last_connection_time = None
+tokens_and_symbols_df = None  # DataFrame to store CSV data
 
 # Add value store for smoother UI transitions
 value_store = {
@@ -374,69 +375,6 @@ ui_data_store = {
     'predicted_strategies': {},  # Added for strategy predictions
     'news': {}  # Added for news data
 }
-# ============ Trading State Class ============
-class TradingState:
-    def __init__(self):
-        self.active_trades = {}
-        self.entry_price = {}
-        self.entry_time = {}
-        self.stop_loss = {}
-        self.initial_stop_loss = {}
-        self.target = {}
-        self.trailing_sl_activated = {}
-        self.pnl = {}
-        self.strategy_type = {}
-        self.trade_source = {}  # Added to track source of trade (e.g., "NEWS", "TECHNICAL")
-        self.total_pnl = 0
-        self.daily_pnl = 0
-        self.trades_history = []
-        self.trades_today = 0
-        self.trading_day = datetime.now().date()
-        self.stock_entry_price = {}
-        self.quantity = {}
-        self.capital = 100000  # Initial capital
-        self.wins = 0
-        self.losses = 0
-        
-    def add_option(self, option_key):
-        """Initialize tracking for a new option"""
-        if option_key not in self.active_trades:
-            self.active_trades[option_key] = False
-            self.entry_price[option_key] = None
-            self.entry_time[option_key] = None
-            self.stop_loss[option_key] = None
-            self.initial_stop_loss[option_key] = None
-            self.target[option_key] = None
-            self.trailing_sl_activated[option_key] = False
-            self.pnl[option_key] = 0
-            self.strategy_type[option_key] = None
-            self.trade_source[option_key] = None
-            self.stock_entry_price[option_key] = None
-            self.quantity[option_key] = 0
-            return True
-        return False
-
-    def remove_option(self, option_key):
-        """Remove an option from trading state tracking"""
-        if option_key in self.active_trades and not self.active_trades[option_key]:
-            del self.active_trades[option_key]
-            del self.entry_price[option_key]
-            del self.entry_time[option_key]
-            del self.stop_loss[option_key]
-            del self.initial_stop_loss[option_key]
-            del self.target[option_key]
-            del self.trailing_sl_activated[option_key]
-            del self.pnl[option_key]
-            del self.strategy_type[option_key]
-            del self.trade_source[option_key]
-            if option_key in self.stock_entry_price:
-                del self.stock_entry_price[option_key]
-            if option_key in self.quantity:
-                del self.quantity[option_key]
-            return True
-        return False
-
-trading_state = TradingState()
 
 # ============ Trading State Class ============
 class TradingState:
@@ -502,436 +440,619 @@ class TradingState:
 
 trading_state = TradingState()
 
-# ============ News Monitoring Functions ============
-def fetch_news_from_sources():
-    """
-    Fetch financial news from various free sources
-    Returns a list of news items with title, description, source, and timestamp
-    """
-    news_items = []
-    
+# ============ CSV Handling Functions ============
+def load_tokens_and_symbols_from_csv():
+    """Load token and symbol mapping from CSV file"""
+    global tokens_and_symbols_df
     try:
-        # Check if feedparser is available
-        if 'feedparser' in sys.modules:
-            # Fetch from Yahoo Finance RSS
-            yahoo_feed = feedparser.parse('https://finance.yahoo.com/news/rssindex')
-            for entry in yahoo_feed.entries[:15]:  # Get top 15 news (increased from 10)
-                news_items.append({
-                    'title': entry.title,
-                    'description': entry.get('description', ''),
-                    'source': 'Yahoo Finance',
-                    'timestamp': datetime.now(),
-                    'url': entry.link
-                })
-            
-            # Add Moneycontrol news (India specific)
-            try:
-                mc_feed = feedparser.parse('https://www.moneycontrol.com/rss/latestnews.xml')
-                for entry in mc_feed.entries[:15]:  # Get top 15 news (increased from 10)
-                    news_items.append({
-                        'title': entry.title,
-                        'description': entry.get('description', ''),
-                        'source': 'Moneycontrol',
-                        'timestamp': datetime.now(),
-                        'url': entry.link
-                    })
-            except Exception as e:
-                logger.warning(f"Error fetching Moneycontrol news: {e}")
-                
-            # Add Economic Times news (India specific)
-            try:
-                et_feed = feedparser.parse('https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms')
-                for entry in et_feed.entries[:15]:  # Get top 15 news
-                    news_items.append({
-                        'title': entry.title,
-                        'description': entry.get('description', ''),
-                        'source': 'Economic Times',
-                        'timestamp': datetime.now(),
-                        'url': entry.link
-                    })
-            except Exception as e:
-                logger.warning(f"Error fetching Economic Times news: {e}")
+        csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
+        logger.info(f"Loading tokens and symbols from {csv_path}")
+        tokens_and_symbols_df = pd.read_csv(csv_path)
+        logger.info(f"Successfully loaded {len(tokens_and_symbols_df)} rows from CSV")
+        return tokens_and_symbols_df
+    except Exception as e:
+        logger.error(f"Error loading tokens and symbols from CSV: {e}", exc_info=True)
+        return pd.DataFrame()  # Return empty DataFrame on error
+
+def search_stock_in_csv(symbol):
+    """
+    Search for a stock in the CSV file by symbol
+    
+    Args:
+        symbol (str): Stock symbol to search for
         
+    Returns:
+        dict: Stock data if found, None otherwise
+    """
+    try:
+        global tokens_and_symbols_df
+        
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
+        
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return None
+        
+        # Filter to NSE segment only
+        stocks = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NSE'].copy()
+        
+        # Search for exact symbol match (case insensitive)
+        symbol = symbol.upper()
+        matches = stocks[stocks['symbol'].str.upper() == symbol]
+        
+        if not matches.empty:
+            logger.info(f"Found stock {symbol} in CSV")
+            # Convert to dictionary for easier handling
+            return matches.iloc[0].to_dict()
+        
+        # If not found by symbol, try searching by name
+        matches = stocks[stocks['name'].str.upper() == symbol]
+        
+        if not matches.empty:
+            logger.info(f"Found stock {symbol} by name in CSV")
+            return matches.iloc[0].to_dict()
+            
+        logger.warning(f"Stock {symbol} not found in CSV")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error searching for stock in CSV: {e}", exc_info=True)
+        return None
+
+def find_stock_token_in_json(symbol):
+    """
+    Find stock token in JSON data (placeholder function, not using JSON anymore)
+    
+    Args:
+        symbol (str): Stock symbol to search for
+        
+    Returns:
+        str: Token if found, None otherwise
+    """
+    # This is a placeholder - we now use CSV based search instead
+    return None
+
+def find_atm_options_in_csv(symbol, current_price):
+    """
+    Find ATM (At The Money) options in the CSV file based on stock symbol and price
+    
+    Args:
+        symbol (str): Stock/index symbol
+        current_price (float): Current price of the stock/index
+        
+    Returns:
+        dict: Dictionary with CE and PE options
+    """
+    try:
+        global tokens_and_symbols_df
+        
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
+        
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return {"CE": None, "PE": None}
+        
+        # Filter to NFO segment only
+        options = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NFO'].copy()
+        
+        # Filter by the underlying stock/index name
+        symbol = symbol.upper()
+        filtered_options = options[options['name'].str.upper() == symbol]
+        
+        if filtered_options.empty:
+            logger.warning(f"No options found for {symbol}")
+            return {"CE": None, "PE": None}
+        
+        # Calculate the appropriate strike price interval based on price
+        if current_price < 100:
+            strike_interval = 5
+        elif current_price < 1000:
+            strike_interval = 10
+        elif current_price < 10000:
+            strike_interval = 50
         else:
-            # Fallback to a simplified approach if feedparser is not available
-            # Fetch some placeholder news or latest headlines
-            logger.warning("feedparser not available, using placeholder news")
-            news_items.append({
-                'title': 'Market Update: NIFTY shows strong momentum',
-                'description': 'Market analysis indicates bullish trend for NIFTY',
-                'source': 'Dashboard',
-                'timestamp': datetime.now(),
-                'url': '#'
-            })
+            strike_interval = 100
+            
+        # Round to nearest appropriate interval
+        atm_strike = round(current_price / strike_interval) * strike_interval
+        logger.info(f"Calculated ATM strike price: {atm_strike}")
         
-        logger.info(f"Fetched {len(news_items)} news items")
-        return news_items
+        # Extract expiry dates and sort them (closest first)
+        try:
+            # Convert expiry strings to datetime objects for proper sorting
+            filtered_options['expiry_date'] = pd.to_datetime(filtered_options['expiry'], format='%d-%b-%y')
+            # Get unique expiry dates sorted by date
+            expiry_dates = sorted(filtered_options['expiry'].unique(), 
+                                key=lambda x: pd.to_datetime(x, format='%d-%b-%y'))
+        except:
+            # If datetime conversion fails, just sort the strings
+            expiry_dates = sorted(filtered_options['expiry'].unique())
+        
+        if len(expiry_dates) == 0:
+            logger.warning(f"No expiry dates found for {symbol}")
+            return {"CE": None, "PE": None}
+            
+        # Get the closest expiry date
+        closest_expiry = expiry_dates[0]
+        logger.info(f"Selected expiry date: {closest_expiry}")
+        
+        # Filter options by the closest expiry
+        expiry_options = filtered_options[filtered_options['expiry'] == closest_expiry]
+        
+        # Extract CE options
+        ce_options = expiry_options[expiry_options['symbol'].str.endswith('CE')]
+        
+        # Extract PE options
+        pe_options = expiry_options[expiry_options['symbol'].str.endswith('PE')]
+        
+        # Find closest strikes to ATM
+        closest_ce = None
+        closest_pe = None
+        
+        if not ce_options.empty:
+            # Calculate distance to ATM strike
+            ce_options['strike_distance'] = abs(ce_options['strike'] - atm_strike)
+            closest_ce_row = ce_options.loc[ce_options['strike_distance'].idxmin()]
+            closest_ce = closest_ce_row.to_dict()
+            logger.info(f"Found CE option: {closest_ce['symbol']} with token {closest_ce['token']} at strike {closest_ce['strike']}")
+        
+        if not pe_options.empty:
+            # Calculate distance to ATM strike
+            pe_options['strike_distance'] = abs(pe_options['strike'] - atm_strike)
+            closest_pe_row = pe_options.loc[pe_options['strike_distance'].idxmin()]
+            closest_pe = closest_pe_row.to_dict()
+            logger.info(f"Found PE option: {closest_pe['symbol']} with token {closest_pe['token']} at strike {closest_pe['strike']}")
+        
+        return {"CE": closest_ce, "PE": closest_pe}
+        
     except Exception as e:
-        logger.error(f"Error fetching news: {e}")
-        return []
+        logger.error(f"Error finding ATM options: {e}", exc_info=True)
+        return {"CE": None, "PE": None}
 
-def analyze_news_for_stocks(news_items, stock_universe):
+def add_stock_from_csv_data(stock_data):
     """
-    Analyze news items to find mentions of stocks and determine sentiment
+    Add a stock using data from CSV
     
     Args:
-        news_items: List of news items with title and description
-        stock_universe: List of stock symbols to look for
-    
+        stock_data (dict): Stock data from CSV
+        
     Returns:
-        dict: Dictionary of stocks with their sentiment scores
+        bool: True if successful, False otherwise
     """
-    stock_mentions = {}
+    if not stock_data:
+        logger.warning("Cannot add stock: Empty stock data")
+        return False
+        
+    # Extract required fields
+    symbol = stock_data.get('symbol')
+    token = stock_data.get('token')
+    exchange = stock_data.get('exch_seg', 'NSE')
+    name = stock_data.get('name', '')
     
-    try:
-        # Import regex module
-        import re
-        
-        for item in news_items:
-            title = item.get('title', '')
-            description = item.get('description', '')
-            full_text = f"{title} {description}"
-            
-            # Enhanced sentiment analysis with more keywords and weightings
-            positive_words = {
-                'surge': 1.5, 'jump': 1.5, 'rise': 1.0, 'gain': 1.0, 'profit': 1.2, 
-                'up': 0.8, 'higher': 1.0, 'bull': 1.3, 'positive': 1.0, 
-                'outperform': 1.4, 'rally': 1.5, 'strong': 1.2, 'beat': 1.3, 
-                'exceed': 1.4, 'growth': 1.2, 'soar': 1.7, 'boost': 1.2, 
-                'upgrade': 1.5, 'breakthrough': 1.6, 'opportunity': 1.1,
-                'record high': 1.8, 'buy': 1.3, 'accumulate': 1.2
-            }
-            
-            negative_words = {
-                'fall': 1.5, 'drop': 1.5, 'decline': 1.0, 'loss': 1.2, 'down': 0.8, 
-                'lower': 1.0, 'bear': 1.3, 'negative': 1.0, 'underperform': 1.4, 
-                'weak': 1.2, 'miss': 1.3, 'disappointing': 1.4, 'sell-off': 1.6, 
-                'crash': 1.8, 'downgrade': 1.5, 'warning': 1.3, 'risk': 1.0,
-                'trouble': 1.4, 'concern': 1.1, 'caution': 0.9, 'burden': 1.2,
-                'record low': 1.8, 'sell': 1.3, 'reduce': 1.2
-            }
-            
-            # Calculate weighted sentiment score
-            pos_score = 0
-            neg_score = 0
-            
-            # Check for positive words with proximity bonus
-            for word, weight in positive_words.items():
-                if word.lower() in full_text.lower():
-                    # Count occurrences
-                    count = full_text.lower().count(word.lower())
-                    # Add to score with weight
-                    pos_score += count * weight
-                    
-                    # Title bonus - words in title have more impact
-                    if word.lower() in title.lower():
-                        pos_score += 0.5 * weight
-            
-            # Check for negative words with proximity bonus
-            for word, weight in negative_words.items():
-                if word.lower() in full_text.lower():
-                    # Count occurrences
-                    count = full_text.lower().count(word.lower())
-                    # Add to score with weight
-                    neg_score += count * weight
-                    
-                    # Title bonus - words in title have more impact
-                    if word.lower() in title.lower():
-                        neg_score += 0.5 * weight
-            
-            # Calculate sentiment score (-1 to 1)
-            if pos_score + neg_score > 0:
-                sentiment = (pos_score - neg_score) / (pos_score + neg_score)
-            else:
-                sentiment = 0  # Neutral if no sentiment words found
-            
-            # Improved stock mention detection
-            for stock in stock_universe:
-                # Look for exact stock symbol with word boundaries
-                pattern = r'\b' + re.escape(stock) + r'\b'
-                
-                # Also check for common variations of the stock name
-                stock_variations = [stock]
-                
-                # Add variations for common Indian stocks
-                if stock == "RELIANCE":
-                    stock_variations.extend(["Reliance Industries", "RIL"])
-                elif stock == "INFY":
-                    stock_variations.extend(["Infosys", "Infosys Technologies"])
-                elif stock == "TCS":
-                    stock_variations.extend(["Tata Consultancy", "Tata Consultancy Services"])
-                elif stock == "HDFCBANK":
-                    stock_variations.extend(["HDFC Bank", "Housing Development Finance Corporation"])
-                elif stock == "SBIN":
-                    stock_variations.extend(["State Bank of India", "SBI"])
-                
-                # Check for any variation
-                found = False
-                for variation in stock_variations:
-                    var_pattern = r'\b' + re.escape(variation) + r'\b'
-                    if re.search(var_pattern, full_text, re.IGNORECASE):
-                        found = True
-                        break
-                
-                if found:
-                    if stock not in stock_mentions:
-                        stock_mentions[stock] = []
-                    
-                    stock_mentions[stock].append({
-                        'sentiment': sentiment,
-                        'title': title,
-                        'source': item.get('source', 'Unknown'),
-                        'timestamp': item.get('timestamp', datetime.now()),
-                        'url': item.get('url', '')
-                    })
-                    logger.info(f"Found mention of {stock} in news with sentiment {sentiment:.2f}")
-        
-        logger.info(f"Found mentions of {len(stock_mentions)} stocks in news")
-        return stock_mentions
-    except Exception as e:
-        logger.error(f"Error analyzing news: {e}")
-        return {}
+    if not symbol or not token:
+        logger.warning("Cannot add stock: Missing symbol or token")
+        return False
+    
+    # Determine stock type (INDEX or STOCK)
+    stock_type = "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK"
+    
+    # Add the stock using the general add_stock function
+    success = add_stock(symbol, token, exchange, stock_type)
+    
+    if success:
+        logger.info(f"Added stock {symbol} from CSV data")
+    else:
+        logger.warning(f"Failed to add stock {symbol} from CSV data")
+    
+    return success
 
-def generate_news_trading_signals(stock_mentions):
+def add_option_from_csv_data(option_data):
     """
-    Generate trading signals based on news mentions and sentiment
+    Add an option using data from CSV
     
     Args:
-        stock_mentions: Dictionary of stocks with their sentiment scores
-    
+        option_data (dict): Option data from CSV
+        
     Returns:
-        list: List of trading signals
+        bool: True if successful, False otherwise
     """
-    trading_signals = []
+    global options_data, stocks_data
     
-    for stock, mentions in stock_mentions.items():
-        if not mentions:
-            continue
-        
-        # Calculate average sentiment
-        avg_sentiment = sum(mention['sentiment'] for mention in mentions) / len(mentions)
-        
-        # Determine confidence based on number of mentions and sentiment strength
-        mentions_factor = min(len(mentions) / 3, 1.0)  # Scale up to 3 mentions
-        sentiment_factor = min(abs(avg_sentiment) * 1.5, 1.0)  # Scale sentiment impact
-        
-        # Combined confidence score
-        confidence = (mentions_factor * 0.6) + (sentiment_factor * 0.4)  # 60% mentions, 40% sentiment strength
-        
-        # Determine trading action based on sentiment
-        if avg_sentiment > NEWS_SENTIMENT_THRESHOLD:  # Strong positive sentiment
-            action = 'BUY_CE'  # Buy Call option
-            
-            trading_signals.append({
-                'stock': stock,
-                'action': action,
-                'sentiment': avg_sentiment,
-                'confidence': confidence,
-                'news_count': len(mentions),
-                'latest_news': mentions[0]['title'],
-                'source': mentions[0]['source'],
-                'timestamp': mentions[0]['timestamp']
-            })
-            logger.info(f"Generated BUY_CE signal for {stock} with confidence {confidence:.2f}")
-            
-        elif avg_sentiment < -NEWS_SENTIMENT_THRESHOLD:  # Strong negative sentiment
-            action = 'BUY_PE'  # Buy Put option
-            
-            trading_signals.append({
-                'stock': stock,
-                'action': action,
-                'sentiment': avg_sentiment,
-                'confidence': confidence,
-                'news_count': len(mentions),
-                'latest_news': mentions[0]['title'],
-                'source': mentions[0]['source'],
-                'timestamp': mentions[0]['timestamp']
-            })
-            logger.info(f"Generated BUY_PE signal for {stock} with confidence {confidence:.2f}")
+    if not option_data:
+        logger.warning("Cannot add option: Empty option data")
+        return False
     
-    # Sort signals by confidence (highest first)
-    trading_signals.sort(key=lambda x: x['confidence'], reverse=True)
+    # Extract required fields
+    symbol = option_data.get('symbol')
+    token = option_data.get('token')
+    exchange = option_data.get('exch_seg', 'NFO')
+    expiry = option_data.get('expiry')
+    strike = option_data.get('strike')
+    name = option_data.get('name', '')
     
-    return trading_signals
-
-def add_news_mentioned_stocks():
-    """Add stocks that are mentioned in news but not currently tracked"""
-    if not news_data.get("mentions"):
-        return
+    if not symbol or not token:
+        logger.warning("Cannot add option: Missing symbol or token")
+        return False
     
-    # Get all mentioned stocks
-    mentioned_stocks = set(news_data["mentions"].keys())
+    # Determine option type (CE or PE)
+    if symbol.endswith('CE'):
+        option_type = 'CE'
+    elif symbol.endswith('PE'):
+        option_type = 'PE'
+    else:
+        logger.warning(f"Cannot determine option type for {symbol}")
+        return False
     
-    # Get currently tracked stocks
-    tracked_stocks = set(stocks_data.keys())
-    
-    # Find stocks to add (mentioned but not tracked)
-    stocks_to_add = mentioned_stocks - tracked_stocks
-    
-    # Add each stock
-    for stock in stocks_to_add:
-        # Skip if it doesn't look like a valid stock symbol
-        if not stock.isalpha() or len(stock) < 2:
-            continue
-            
-        logger.info(f"Adding stock {stock} based on news mentions")
-        add_stock(stock, None, "NSE", "STOCK")
-        
-        # Try to fetch data immediately
-        if broker_connected:
-            fetch_stock_data(stock)
-
-def execute_news_based_trades():
-    """Execute trades based on news analysis"""
-    if not strategy_settings["NEWS_ENABLED"]:
-        logger.info("News-based trading is disabled")
-        return
-    
-    if not broker_connected:
-        logger.warning("Cannot execute news-based trades: Not connected to broker")
-        return
-    
-    # Check if we've hit the maximum trades for the day
-    if trading_state.trades_today >= MAX_TRADES_PER_DAY:
-        logger.info("Maximum trades for the day reached, skipping news-based trades")
-        return
-    
-    # Check if we've hit the maximum loss percentage for the day
-    if trading_state.daily_pnl <= -MAX_LOSS_PERCENTAGE * trading_state.capital / 100:
-        logger.info("Maximum daily loss reached, skipping news-based trades")
-        return
-    
-    # Limit to top 3 highest confidence signals
-    top_signals = sorted(news_data["trading_signals"], key=lambda x: x['confidence'], reverse=True)[:3]
-    
-    for signal in top_signals:
-        stock = signal['stock']
-        action = signal['action']
-        confidence = signal['confidence']
-        news_title = signal['latest_news']
-        
-        # Skip trades with low confidence
-        if confidence < NEWS_CONFIDENCE_THRESHOLD:
-            logger.info(f"Skipping news-based trade for {stock} due to low confidence ({confidence:.2f})")
-            continue
-        
-        # Skip if the news is too old
-        signal_time = signal['timestamp']
-        if isinstance(signal_time, datetime):
-            if (datetime.now() - signal_time).total_seconds() > NEWS_MAX_AGE:
-                logger.info(f"Skipping news-based trade for {stock} - news is too old")
-                continue
-        
-        # Add stock if not already tracking
-        if stock not in stocks_data:
-            logger.info(f"Adding stock {stock} based on news")
-            add_stock(stock, None, "NSE", "STOCK")
-        
-        # Wait for stock data to be loaded
-        attempt = 0
-        while stock in stocks_data and stocks_data[stock]["ltp"] is None and attempt < 10:
-            logger.info(f"Waiting for {stock} data to load... (attempt {attempt+1})")
-            time.sleep(0.5)
-            attempt += 1
-        
-        if stock not in stocks_data or stocks_data[stock]["ltp"] is None:
-            logger.warning(f"Could not get price data for {stock}, skipping trade")
-            continue
-        
-        # Determine option type
-        option_type = "CE" if action == "BUY_CE" else "PE"
-        
-        # Find appropriate option
-        options = find_and_add_options(stock)
-        option_key = options.get(option_type)
-        
-        if not option_key:
-            logger.warning(f"Could not find suitable {option_type} option for {stock}")
-            continue
-        
-        # Check if option is already in active trade
-        if trading_state.active_trades.get(option_key, False):
-            logger.info(f"Already in a trade for {stock} {option_type}, skipping")
-            continue
-        
-        # Execute the trade
-        strategy_type = "NEWS"  # Special strategy type for news-based trades
-        success = enter_trade(option_key, strategy_type, "NEWS")
-        
-        if success:
-            logger.info(f"Executed news-based trade for {stock} {option_type} based on: {news_title}")
-            
-            # Update news signal to avoid duplicate trades
-            signal['executed'] = True
-            signal['execution_time'] = datetime.now()
-            signal['option_key'] = option_key
-            
-            # We only take a few news-based trades at a time
+    # Determine parent symbol (e.g., NIFTY, BANKNIFTY)
+    parent_symbol = None
+    for potential_parent in stocks_data.keys():
+        if potential_parent in name:
+            parent_symbol = potential_parent
             break
+    
+    if not parent_symbol:
+        logger.warning(f"Cannot determine parent symbol for {symbol}")
+        return False
+    
+    # Create a unique option key
+    try:
+        expiry_date = expiry.replace('-', '')
+        # Handle month format (convert Apr to APR if needed)
+        month_match = re.search(r'([A-Za-z]+)', expiry_date)
+        if month_match:
+            month = month_match.group(1).upper()
+            expiry_date = expiry_date.replace(month_match.group(1), month)
+    except:
+        # If regex fails, use expiry as is
+        expiry_date = expiry
+        
+    strike_str = str(int(float(strike)))
+    option_key = f"{parent_symbol}_{expiry_date}_{strike_str}_{option_type}"
+    
+    # Check if option already exists
+    if option_key in options_data:
+        return True
+    
+    # Create option entry
+    options_data[option_key] = {
+        "symbol": symbol,
+        "token": token,
+        "exchange": exchange,
+        "parent_symbol": parent_symbol,
+        "expiry": expiry,
+        "strike": strike,
+        "option_type": option_type,
+        "ltp": None,
+        "previous": None,
+        "high": None,
+        "low": None,
+        "open": None,
+        "change_percent": 0,
+        "movement_pct": 0,
+        "signal": 0,
+        "strength": 0,
+        "trend": "NEUTRAL",
+        "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open', 'high', 'low']),
+        "last_updated": None,
+        "is_fallback": False
+    }
+    
+    # Add to parent stock's options list
+    if parent_symbol in stocks_data:
+        if option_type not in stocks_data[parent_symbol]["options"]:
+            stocks_data[parent_symbol]["options"][option_type] = []
+        
+        if option_key not in stocks_data[parent_symbol]["options"][option_type]:
+            stocks_data[parent_symbol]["options"][option_type].append(option_key)
+    
+    # Initialize in trading state
+    trading_state.add_option(option_key)
+    
+    logger.info(f"Added option {option_key} from CSV data")
+    return True
 
-def update_news_data():
-    """Update news data and generate trading signals"""
-    global news_data, last_news_update
+def initialize_from_csv():
+    """
+    Initialize with default stocks only, without loading everything from CSV
+    """
+    # Initialize global DataFrame for CSV data
+    global tokens_and_symbols_df
+    tokens_and_symbols_df = None
     
-    current_time = datetime.now()
-    if (current_time - last_news_update).total_seconds() < NEWS_CHECK_INTERVAL:
-        return
+    # Load CSV data
+    load_tokens_and_symbols_from_csv()
     
-    # Get all tracked stocks as the universe
-    stock_universe = list(stocks_data.keys())
-    
-    # Add a list of common Indian stocks/indices
-    common_stocks = [
-        "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "WIPRO", "SBIN", 
-        "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ADANIPORTS", "HINDUNILVR",
-        "AXISBANK", "SUNPHARMA", "KOTAKBANK", "ONGC", "MARUTI", "BHARTIARTL"
-    ]
-    
-    for stock in common_stocks:
-        if stock not in stock_universe:
-            stock_universe.append(stock)
-    
-    # Add major indices
-    indices = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-    for idx in indices:
-        if idx not in stock_universe:
-            stock_universe.append(idx)
-    
-    # Fetch news
-    news_items = fetch_news_from_sources()
-    
-    # Only update if we got new news items
-    if news_items:
-        # Analyze news for stock mentions
-        stock_mentions = analyze_news_for_stocks(news_items, stock_universe)
+    # Add default stocks
+    for stock in DEFAULT_STOCKS:
+        add_stock_from_csv_data({
+            'token': stock["token"],
+            'symbol': stock["symbol"],
+            'name': stock["symbol"],  # Use symbol as name for default stocks
+            'exch_seg': stock["exchange"]
+        })
         
-        # Generate trading signals
-        trading_signals = generate_news_trading_signals(stock_mentions)
-        
-        # Update news data
-        news_data["items"] = news_items
-        news_data["mentions"] = stock_mentions
-        news_data["trading_signals"] = trading_signals
-        news_data["last_updated"] = current_time
-        
-        # Update UI data store
-        ui_data_store['news'] = {
-            'items': news_items[:5],  # Store the 5 most recent items
-            'mentions': stock_mentions,
-            'signals': trading_signals,
-            'last_updated': current_time.strftime('%H:%M:%S')
-        }
-        
-        # Add stocks mentioned in news
-        add_news_mentioned_stocks()
-        
-        # Try to execute trades if any signals were generated
-        if trading_signals and broker_connected:
-            execute_news_based_trades()
+    logger.info(f"Initialization complete with default stocks")
+
+def find_and_add_options(symbol):
+    """
+    Find and add appropriate options for a stock
     
-    last_news_update = current_time
+    Args:
+        symbol (str): Stock or index symbol
+        
+    Returns:
+        dict: Dictionary with CE and PE option keys
+    """
+    # Use the current price to find ATM options from CSV
+    if symbol not in stocks_data:
+        logger.warning(f"Cannot find options: Stock {symbol} not found")
+        return {"CE": None, "PE": None}
+
+    current_price = stocks_data[symbol].get("ltp")
+    if current_price is None or current_price <= 0:
+        logger.warning(f"Cannot find options: Invalid price for {symbol}")
+        return {"CE": None, "PE": None}
+    
+    # Find ATM options in CSV
+    return find_and_add_atm_options(symbol, current_price)
+
+def find_and_add_atm_options(symbol, current_price):
+    """
+    Find and add ATM options for a stock
+    
+    Args:
+        symbol (str): Stock or index symbol
+        current_price (float): Current price of the stock/index
+        
+    Returns:
+        dict: Dictionary with CE and PE option keys
+    """
+    if current_price is None or current_price <= 0:
+        logger.error(f"Cannot find options: Invalid price {current_price} for {symbol}")
+        return {"CE": None, "PE": None}
+    
+    # Find ATM options in CSV
+    atm_options = find_atm_options_in_csv(symbol, current_price)
+    
+    # Results to track added options
+    added_options = {"CE": None, "PE": None}
+    
+    # Process CE option
+    ce_option_data = atm_options.get("CE")
+    if ce_option_data:
+        ce_success = add_option_from_csv_data(ce_option_data)
+        if ce_success:
+            # Create unique option key based on the data
+            try:
+                expiry_date = ce_option_data.get('expiry', '').replace('-', '')
+                # Handle month format (convert Apr to APR if needed)
+                month_match = re.search(r'([A-Za-z]+)', expiry_date)
+                if month_match:
+                    month = month_match.group(1).upper()
+                    expiry_date = expiry_date.replace(month_match.group(1), month)
+            except:
+                # If regex fails, use expiry as is
+                expiry_date = ce_option_data.get('expiry', '')
+                
+            strike = str(int(ce_option_data.get('strike', 0)))
+            ce_key = f"{symbol}_{expiry_date}_{strike}_CE"
+            
+            # Set as primary CE option
+            if symbol in stocks_data:
+                stocks_data[symbol]["primary_ce"] = ce_key
+                logger.info(f"Set {ce_key} as primary CE option for {symbol}")
+                
+                # Fetch option data if broker connected
+                if broker_connected:
+                    fetch_option_data(ce_key)
+                
+            added_options["CE"] = ce_key
+    
+    # Process PE option
+    pe_option_data = atm_options.get("PE")
+    if pe_option_data:
+        pe_success = add_option_from_csv_data(pe_option_data)
+        if pe_success:
+            # Create unique option key based on the data
+            try:
+                expiry_date = pe_option_data.get('expiry', '').replace('-', '')
+                # Handle month format (convert Apr to APR if needed)
+                month_match = re.search(r'([A-Za-z]+)', expiry_date)
+                if month_match:
+                    month = month_match.group(1).upper()
+                    expiry_date = expiry_date.replace(month_match.group(1), month)
+            except:
+                # If regex fails, use expiry as is
+                expiry_date = pe_option_data.get('expiry', '')
+                
+            strike = str(int(pe_option_data.get('strike', 0)))
+            pe_key = f"{symbol}_{expiry_date}_{strike}_PE"
+            
+            # Set as primary PE option
+            if symbol in stocks_data:
+                stocks_data[symbol]["primary_pe"] = pe_key
+                logger.info(f"Set {pe_key} as primary PE option for {symbol}")
+                
+                # Fetch option data if broker connected
+                if broker_connected:
+                    fetch_option_data(pe_key)
+                
+            added_options["PE"] = pe_key
+    
+    logger.info(f"Added options for {symbol}: CE={added_options.get('CE')}, PE={added_options.get('PE')}")
+    return added_options
+
+def search_and_validate_option_token(parent_symbol, strike_price, option_type, expiry):
+    """
+    Search and validate option token using CSV data instead of API
+    
+    Args:
+        parent_symbol (str): Parent stock/index symbol
+        strike_price (float): Strike price
+        option_type (str): Option type (ce/pe)
+        expiry (str): Expiry date
+    
+    Returns:
+        dict: Token info if found, None otherwise
+    """
+    # Use CSV data to search for the option token
+    try:
+        global tokens_and_symbols_df
+        
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
+        
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return None
+        
+        # Filter to NFO segment only
+        options = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NFO'].copy()
+        
+        # Filter by the underlying stock/index name
+        filtered_options = options[options['name'].str.upper().str.contains(parent_symbol.upper())]
+        
+        if filtered_options.empty:
+            logger.warning(f"No options found for {parent_symbol}")
+            return None
+        
+        # Filter by option type
+        option_suffix = option_type.upper()
+        type_options = filtered_options[filtered_options['symbol'].str.endswith(option_suffix)]
+        
+        if type_options.empty:
+            logger.warning(f"No {option_type.upper()} options found for {parent_symbol}")
+            return None
+        
+        # Find closest strike
+        if 'strike' in type_options.columns:
+            type_options['strike_diff'] = abs(type_options['strike'] - strike_price)
+            closest_strike = type_options.loc[type_options['strike_diff'].idxmin()]
+            
+            result = {
+                'token': closest_strike.get('token'),
+                'symbol': closest_strike.get('symbol'),
+                'strike': closest_strike.get('strike'),
+                'is_fallback': False
+            }
+            
+            logger.info(f"Found matching option: {result['symbol']} with token {result['token']}")
+            return result
+        
+        logger.warning(f"Could not find matching option for {parent_symbol} {strike_price} {option_type}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error searching for option token: {e}")
+        return None
+
 # ============ Stock Management Functions ============
-# ============ Stock Management Functions ============
+def add_stock(symbol, token=None, exchange="NSE", stock_type="STOCK", with_options=True):
+    """Add a new stock to track with improved CSV-based token matching"""
+    global stocks_data, volatility_data, market_sentiment, pcr_data
+
+    # Standardize symbol name to uppercase
+    symbol = symbol.upper()
+    
+    # If already exists, just return
+    if symbol in stocks_data:
+        return True
+    
+    # If token is None, try to find the token using CSV
+    if token is None:
+        # Search in CSV data
+        stock_csv_data = search_stock_in_csv(symbol)
+        
+        if stock_csv_data:
+            token = stock_csv_data.get("token")
+            exchange = stock_csv_data.get("exch_seg", exchange)
+            stock_type = "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK"
+        
+        # If still no token, use placeholder
+        if token is None:
+            logger.warning(f"Could not find token for {symbol} in CSV, using placeholder")
+            token = str(hash(symbol) % 100000)
+    
+    # Create new stock entry
+    stocks_data[symbol] = {
+        "token": token,
+        "exchange": exchange,
+        "symbol": symbol,
+        "type": stock_type,
+        "ltp": None,
+        "previous": None,
+        "high": None,
+        "low": None,
+        "open": None,
+        "change_percent": 0,
+        "movement_pct": 0,
+        "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open', 'high', 'low']),
+        "support_levels": [],
+        "resistance_levels": [],
+        "last_sr_update": None,  # Track when S/R was last calculated
+        "strategy_enabled": {
+            "SCALP": True,
+            "SWING": True,
+            "MOMENTUM": True,
+            "NEWS": True
+        },
+        "options": {
+            "CE": [],
+            "PE": []
+        },
+        "primary_ce": None,
+        "primary_pe": None,
+        "last_updated": None,
+        "data_source": "broker",  # Track the source of data
+        "predicted_strategy": None,  # Added to track predicted strategy
+        "strategy_confidence": 0,  # Added to track strategy confidence
+    }
+    
+    # Initialize volatility tracking
+    volatility_data[symbol] = {
+        "window": deque(maxlen=30),
+        "current": 0,
+        "historical": []
+    }
+    
+    # Initialize market sentiment
+    market_sentiment[symbol] = "NEUTRAL"
+    
+    # Initialize PCR data
+    pcr_data[symbol] = {
+        "current": 1.0,
+        "history": deque(maxlen=PCR_HISTORY_LENGTH),
+        "trend": "NEUTRAL",
+        "strength": 0.0,  # Added PCR strength indicator
+        "last_updated": None
+    }
+    
+    # Set last update time to force immediate update
+    last_data_update["stocks"][symbol] = None
+    
+    logger.info(f"Added new stock: {symbol} ({token}) on {exchange}")
+    
+    # For NIFTY and BANKNIFTY, load historical data from CSV files
+    if symbol in ["NIFTY", "BANKNIFTY"]:
+        load_historical_data(symbol)
+    
+    # Immediately fetch price data for the new stock
+    if broker_connected:
+        fetch_stock_data(symbol)
+    
+    # Add options if requested and we have price data
+    if with_options and stocks_data[symbol]["ltp"] is not None:
+        # Find and add ATM options
+        options = find_and_add_options(symbol)
+        logger.info(f"Added options for {symbol}: CE={options.get('CE')}, PE={options.get('PE')}")
+    
+    return True
+
 def fetch_stock_data(symbol):
     """
     Fetch data for a single stock directly
@@ -1071,6 +1192,57 @@ def fetch_stock_data(symbol):
         logger.error(f"Error fetching data for {symbol}: {e}")
         return False
 
+def load_historical_data(symbol, period="3mo", force_refresh=False):
+    """Load historical data with proper validation and error handling"""
+    if symbol not in stocks_data:
+        logger.warning(f"Cannot load history for unknown symbol: {symbol}")
+        return False
+    
+    # Skip if data is already loaded and not forced to refresh
+    if not force_refresh and stocks_data[symbol].get("history_fetched", False):
+        logger.info(f"Historical data already loaded for {symbol}, skipping")
+        return True
+    
+    # Fetch history from Yahoo Finance
+    try:
+        history_df = fetch_history_from_yahoo(symbol, period)
+        
+        if history_df is None or history_df.empty:
+            logger.warning(f"Failed to fetch history for {symbol}")
+            return False
+        
+        # Verify we have valid price data
+        if 'price' not in history_df.columns:
+            logger.warning(f"No price column in fetched data for {symbol}")
+            return False
+            
+        valid_prices = history_df['price'].dropna()
+        if len(valid_prices) < 30:  # Require at least 30 valid price points for better S/R
+            logger.warning(f"Insufficient valid price data for {symbol}: {len(valid_prices)} points")
+            return False
+            
+        # Store the data directly, overwriting any existing history
+        with price_history_lock:
+            stocks_data[symbol]["price_history"] = history_df
+        
+        # Update metadata
+        stocks_data[symbol]["history_source"] = "yahoo"
+        stocks_data[symbol]["history_fetched"] = True
+        stocks_data[symbol]["last_history_fetch"] = datetime.now()
+        
+        # Force recalculation of support/resistance
+        calculate_support_resistance(symbol)
+        stocks_data[symbol]["last_sr_update"] = datetime.now()
+        
+        # Also recalculate strategy prediction with new historical data
+        predict_strategy_for_stock(symbol)
+        
+        logger.info(f"Successfully loaded historical data for {symbol}: {len(history_df)} points")
+        return True
+    except Exception as e:
+        logger.error(f"Error loading historical data for {symbol}: {e}", exc_info=True)
+        return False
+
 def fetch_history_from_yahoo(symbol, period="3mo"):
     """
     Fetch historical data for a symbol from Yahoo Finance with improved error handling
@@ -1150,167 +1322,58 @@ def fetch_history_from_yahoo(symbol, period="3mo"):
         logger.error(f"Error fetching history for {symbol} from Yahoo Finance: {e}", exc_info=True)
         return None
 
-def load_historical_data(symbol, period="3mo", force_refresh=False):
-    """Load historical data with proper validation and error handling"""
-    if symbol not in stocks_data:
-        logger.warning(f"Cannot load history for unknown symbol: {symbol}")
-        return False
+def remove_stock(symbol):
+    """Remove a stock and its options from tracking"""
+    global stocks_data, options_data, volatility_data, market_sentiment, pcr_data
     
-    # Skip if data is already loaded and not forced to refresh
-    if not force_refresh and stocks_data[symbol].get("history_fetched", False):
-        logger.info(f"Historical data already loaded for {symbol}, skipping")
-        return True
-    
-    # Fetch history from Yahoo Finance
-    try:
-        history_df = fetch_history_from_yahoo(symbol, period)
-        
-        if history_df is None or history_df.empty:
-            logger.warning(f"Failed to fetch history for {symbol}")
-            return False
-        
-        # Verify we have valid price data
-        if 'price' not in history_df.columns:
-            logger.warning(f"No price column in fetched data for {symbol}")
-            return False
-            
-        valid_prices = history_df['price'].dropna()
-        if len(valid_prices) < 30:  # Require at least 30 valid price points for better S/R
-            logger.warning(f"Insufficient valid price data for {symbol}: {len(valid_prices)} points")
-            return False
-            
-        # Store the data directly, overwriting any existing history
-        with price_history_lock:
-            stocks_data[symbol]["price_history"] = history_df
-        
-        # Update metadata
-        stocks_data[symbol]["history_source"] = "yahoo"
-        stocks_data[symbol]["history_fetched"] = True
-        stocks_data[symbol]["last_history_fetch"] = datetime.now()
-        
-        # Force recalculation of support/resistance
-        calculate_support_resistance(symbol)
-        stocks_data[symbol]["last_sr_update"] = datetime.now()
-        
-        # Also recalculate strategy prediction with new historical data
-        predict_strategy_for_stock(symbol)
-        
-        logger.info(f"Successfully loaded historical data for {symbol}: {len(history_df)} points")
-        return True
-    except Exception as e:
-        logger.error(f"Error loading historical data for {symbol}: {e}", exc_info=True)
-        return False
-
-
-def add_stock(symbol, token=None, exchange="NSE", stock_type="STOCK", with_options=True):
-    """Add a new stock to track with improved token matching"""
-    global stocks_data, volatility_data, market_sentiment, pcr_data
-
     # Standardize symbol name to uppercase
     symbol = symbol.upper()
     
-    # If already exists, just return
-    if symbol in stocks_data:
-        return True
+    if symbol not in stocks_data:
+        return False
     
-    # If token is None, try to find the token using exact matching
-    if token is None:
-        # Try to find the exact token in script master first
-        token = find_stock_token_in_json(symbol)
-        
-        # If not found in script master, try to search using broker API if connected
-        if token is None and broker_connected:
-            matches = search_symbols(symbol)
-            
-            # Find the exact match only
-            for match in matches:
-                match_symbol = match.get("symbol", "").upper()
-                match_name = match.get("name", "").upper()
-                
-                if match_symbol == symbol or match_name == symbol:
-                    token = match.get("token")
-                    exchange = match.get("exch_seg", exchange)
-                    stock_type = "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK"
-                    break
-        
-        # If still no token, use placeholder
-        if token is None:
-            logger.warning(f"Could not find exact token for {symbol}, using placeholder")
-            token = str(hash(symbol) % 100000)
+    # First remove all associated options
+    if "options" in stocks_data[symbol]:
+        for option_type in ["CE", "PE"]:
+            for option_key in stocks_data[symbol]["options"].get(option_type, []):
+                if option_key in options_data:
+                    # Exit any active trade on this option
+                    if trading_state.active_trades.get(option_key, False):
+                        exit_trade(option_key, reason="Stock removed")
+                    
+                    # Remove option data
+                    del options_data[option_key]
+                    
+                    # Clean up trading state
+                    trading_state.remove_option(option_key)
     
-    # Create new stock entry
-    stocks_data[symbol] = {
-        "token": token,
-        "exchange": exchange,
-        "symbol": symbol,
-        "type": stock_type,
-        "ltp": None,
-        "previous": None,
-        "high": None,
-        "low": None,
-        "open": None,
-        "change_percent": 0,
-        "movement_pct": 0,
-        "price_history": pd.DataFrame(columns=['timestamp', 'price', 'volume', 'open', 'high', 'low']),
-        "support_levels": [],
-        "resistance_levels": [],
-        "last_sr_update": None,  # Track when S/R was last calculated
-        "strategy_enabled": {
-            "SCALP": True,
-            "SWING": True,
-            "MOMENTUM": True,
-            "NEWS": True
-        },
-        "options": {
-            "CE": [],
-            "PE": []
-        },
-        "primary_ce": None,
-        "primary_pe": None,
-        "last_updated": None,
-        "data_source": "broker",  # Track the source of data
-        "predicted_strategy": None,  # Added to track predicted strategy
-        "strategy_confidence": 0,  # Added to track strategy confidence
-    }
+    # Clean up other data structures
+    if symbol in volatility_data:
+        del volatility_data[symbol]
     
-    # Initialize volatility tracking
-    volatility_data[symbol] = {
-        "window": deque(maxlen=30),
-        "current": 0,
-        "historical": []
-    }
+    if symbol in market_sentiment:
+        del market_sentiment[symbol]
     
-    # Initialize market sentiment
-    market_sentiment[symbol] = "NEUTRAL"
+    if symbol in pcr_data:
+        del pcr_data[symbol]
     
-    # Initialize PCR data
-    pcr_data[symbol] = {
-        "current": 1.0,
-        "history": deque(maxlen=PCR_HISTORY_LENGTH),
-        "trend": "NEUTRAL",
-        "strength": 0.0,  # Added PCR strength indicator
-        "last_updated": None
-    }
+    if symbol in last_data_update["stocks"]:
+        del last_data_update["stocks"][symbol]
     
-    # Set last update time to force immediate update
-    last_data_update["stocks"][symbol] = None
+    # Remove from UI data stores
+    if symbol in ui_data_store['stocks']:
+        del ui_data_store['stocks'][symbol]
     
-    logger.info(f"Added new stock: {symbol} ({token}) on {exchange}")
+    if symbol in ui_data_store['options']:
+        del ui_data_store['options'][symbol]
     
-    # For NIFTY and BANKNIFTY, load historical data from CSV files
-    if symbol in ["NIFTY", "BANKNIFTY"]:
-        load_historical_data(symbol)
+    if symbol in ui_data_store['predicted_strategies']:
+        del ui_data_store['predicted_strategies'][symbol]
     
-    # Immediately fetch price data for the new stock
-    if broker_connected:
-        fetch_stock_data(symbol)
+    # Finally, remove the stock itself
+    del stocks_data[symbol]
     
-    # Add options if requested and we have price data
-    if with_options and stocks_data[symbol]["ltp"] is not None:
-        # Find and add ATM options
-        options = find_and_add_options(symbol)
-        logger.info(f"Added options for {symbol}: CE={options.get('CE')}, PE={options.get('PE')}")
-    
+    logger.info(f"Removed stock: {symbol}")
     return True
 
 @rate_limited
@@ -1448,61 +1511,6 @@ def fetch_pcr_data():
     
     return pcr_dict
 
-def remove_stock(symbol):
-    """Remove a stock and its options from tracking"""
-    global stocks_data, options_data, volatility_data, market_sentiment, pcr_data
-    
-    # Standardize symbol name to uppercase
-    symbol = symbol.upper()
-    
-    if symbol not in stocks_data:
-        return False
-    
-    # First remove all associated options
-    if "options" in stocks_data[symbol]:
-        for option_type in ["CE", "PE"]:
-            for option_key in stocks_data[symbol]["options"].get(option_type, []):
-                if option_key in options_data:
-                    # Exit any active trade on this option
-                    if trading_state.active_trades.get(option_key, False):
-                        exit_trade(option_key, reason="Stock removed")
-                    
-                    # Remove option data
-                    del options_data[option_key]
-                    
-                    # Clean up trading state
-                    trading_state.remove_option(option_key)
-    
-    # Clean up other data structures
-    if symbol in volatility_data:
-        del volatility_data[symbol]
-    
-    if symbol in market_sentiment:
-        del market_sentiment[symbol]
-    
-    if symbol in pcr_data:
-        del pcr_data[symbol]
-    
-    if symbol in last_data_update["stocks"]:
-        del last_data_update["stocks"][symbol]
-    
-    # Remove from UI data stores
-    if symbol in ui_data_store['stocks']:
-        del ui_data_store['stocks'][symbol]
-    
-    if symbol in ui_data_store['options']:
-        del ui_data_store['options'][symbol]
-    
-    if symbol in ui_data_store['predicted_strategies']:
-        del ui_data_store['predicted_strategies'][symbol]
-    
-    # Finally, remove the stock itself
-    del stocks_data[symbol]
-    
-    logger.info(f"Removed stock: {symbol}")
-    return True
-
-
 def update_pcr_data(symbol):
     """Update PCR data for a symbol using real data when possible, falling back to simulation."""
     global pcr_data
@@ -1562,57 +1570,6 @@ def update_pcr_data(symbol):
     
     # If all else fails, use the previous value
     return False
-
-def calculate_pcr_strength(symbol):
-    """
-    Calculate PCR strength based on current value and trend
-    
-    Args:
-        symbol (str): Symbol to calculate PCR strength for
-    """
-    if symbol not in pcr_data:
-        return
-    
-    pcr_val = pcr_data[symbol]["current"]
-    pcr_trend = pcr_data[symbol]["trend"]
-    
-    # Base strength calculation
-    if pcr_val < PCR_BULLISH_THRESHOLD:
-        # Bullish indication (lower PCR)
-        deviation = (PCR_BULLISH_THRESHOLD - pcr_val) / PCR_BULLISH_THRESHOLD
-        strength = min(deviation * 10, 1.0)  # Scale to max 1.0
-    elif pcr_val > PCR_BEARISH_THRESHOLD:
-        # Bearish indication (higher PCR)
-        deviation = (pcr_val - PCR_BEARISH_THRESHOLD) / PCR_BEARISH_THRESHOLD
-        strength = -min(deviation * 10, 1.0)  # Negative for bearish, scale to max -1.0
-    else:
-        # Neutral zone
-        mid_point = (PCR_BULLISH_THRESHOLD + PCR_BEARISH_THRESHOLD) / 2
-        if pcr_val < mid_point:
-            # Slightly bullish
-            strength = 0.2
-        elif pcr_val > mid_point:
-            # Slightly bearish
-            strength = -0.2
-        else:
-            strength = 0
-    
-    # Enhance strength based on trend
-    if pcr_trend == "RISING" and strength < 0:
-        # Strengthening bearish signal
-        strength *= 1.2
-    elif pcr_trend == "FALLING" and strength > 0:
-        # Strengthening bullish signal
-        strength *= 1.2
-    elif pcr_trend == "RISING" and strength > 0:
-        # Weakening bullish signal
-        strength *= 0.8
-    elif pcr_trend == "FALLING" and strength < 0:
-        # Weakening bearish signal
-        strength *= 0.8
-    
-    # Update PCR strength
-    pcr_data[symbol]["strength"] = strength
 
 @rate_limited
 def fetch_option_data(option_key):
@@ -1724,34 +1681,9 @@ def fetch_option_data(option_key):
                                 using_fallback = True
                                 fallback_reason = "No new token found"
                         else:
-                            # For non-fallback tokens, try direct search
-                            matches = search_symbols(symbol)
-                            if matches and len(matches) > 0:
-                                new_token = matches[0].get("token")
-                                if new_token and new_token != token:
-                                    logger.info(f"Updated token for {symbol}: {new_token}")
-                                    option_info["token"] = new_token
-                                    
-                                    # Try again with the new token
-                                    try:
-                                        new_resp = smart_api.ltpData(exchange, symbol, new_token)
-                                        if new_resp.get("status"):
-                                            ltp_resp = new_resp
-                                            logger.info(f"Successfully fetched data with new token")
-                                        else:
-                                            logger.warning(f"Still failed with new token: {new_resp}")
-                                            using_fallback = True
-                                            fallback_reason = "Token refresh failed"
-                                    except Exception as e:
-                                        logger.warning(f"Error using new token: {e}")
-                                        using_fallback = True
-                                        fallback_reason = "Error with new token"
-                                else:
-                                    using_fallback = True
-                                    fallback_reason = "No new token found"
-                            else:
-                                using_fallback = True
-                                fallback_reason = "Symbol search failed"
+                            # For non-fallback tokens, search for the symbol in CSV
+                            using_fallback = True
+                            fallback_reason = "Could not find token in CSV"
                     else:
                         # Other types of errors
                         using_fallback = True
@@ -1928,7 +1860,6 @@ def fetch_option_data(option_key):
         logger.error(f"Comprehensive error updating option {option_key}: {main_err}", exc_info=True)
         return False
 
-
 def update_all_options():
     """
     Update all options with a more efficient prioritized approach using caching
@@ -1993,276 +1924,75 @@ def update_all_options():
     # Log overall update status
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
 
-
-
-
-# ============ Script Master Data Management ============
-def load_tokens_and_symbols_from_csv():
-    """Load token and symbol mapping from CSV file"""
-    global tokens_and_symbols_df
-    try:
-        csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
-        logger.info(f"Loading tokens and symbols from {csv_path}")
-        tokens_and_symbols_df = pd.read_csv(csv_path)
-        logger.info(f"Successfully loaded {len(tokens_and_symbols_df)} rows from CSV")
-        return tokens_and_symbols_df
-    except Exception as e:
-        logger.error(f"Error loading tokens and symbols from CSV: {e}", exc_info=True)
-        return pd.DataFrame()  # Return empty DataFrame on error
-
-def search_stock_in_csv(symbol):
+def update_option_selection(force_update=False):
     """
-    Search for a stock in the CSV file by symbol
+    Update option selection for all stocks based on current prices
+    """
+    global stocks_data, last_option_selection_update
     
-    Args:
-        symbol (str): Stock symbol to search for
+    current_time = datetime.now()
+    
+    # Only update periodically unless forced
+    if not force_update and (current_time - last_option_selection_update).total_seconds() < OPTION_AUTO_SELECT_INTERVAL:
+        return
+    
+    logger.info("Updating option selection based on current stock prices")
+    
+    # Process each stock
+    for symbol, stock_info in stocks_data.items():
+        current_price = stock_info.get("ltp")
         
-    Returns:
-        dict: Stock data if found, None otherwise
-    """
-    try:
-        global tokens_and_symbols_df
-        
-        # If DataFrame not loaded yet, load it
-        if tokens_and_symbols_df is None:
-            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
-        
-        if tokens_and_symbols_df.empty:
-            logger.error("CSV data not loaded")
-            return None
-        
-        # Filter to NSE segment only
-        stocks = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NSE'].copy()
-        
-        # Search for exact symbol match (case insensitive)
-        symbol = symbol.upper()
-        matches = stocks[stocks['symbol'].str.upper() == symbol]
-        
-        if not matches.empty:
-            logger.info(f"Found stock {symbol} in CSV")
-            # Convert to dictionary for easier handling
-            return matches.iloc[0].to_dict()
-        
-        # If not found by symbol, try searching by name
-        matches = stocks[stocks['name'].str.upper() == symbol]
-        
-        if not matches.empty:
-            logger.info(f"Found stock {symbol} by name in CSV")
-            return matches.iloc[0].to_dict()
+        if current_price is None or current_price <= 0:
+            logger.warning(f"Skipping option selection for {symbol}: Invalid price {current_price}")
+            continue
             
-        logger.warning(f"Stock {symbol} not found in CSV")
-        return None
+        # Check if we need new options
+        need_new_options = False
         
-    except Exception as e:
-        logger.error(f"Error searching for stock in CSV: {e}", exc_info=True)
-        return None
-
-def find_atm_options_in_csv(symbol, current_price):
-    """
-    Find ATM (At The Money) options in the CSV file based on stock symbol and price
-    
-    Args:
-        symbol (str): Stock/index symbol
-        current_price (float): Current price of the stock/index
+        # Check current primary options
+        primary_ce = stock_info.get("primary_ce")
+        primary_pe = stock_info.get("primary_pe")
         
-    Returns:
-        dict: Dictionary with CE and PE options
-    """
-    try:
-        global tokens_and_symbols_df
-        
-        # If DataFrame not loaded yet, load it
-        if tokens_and_symbols_df is None:
-            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
-        
-        if tokens_and_symbols_df.empty:
-            logger.error("CSV data not loaded")
-            return {"CE": None, "PE": None}
-        
-        # Filter to NFO segment only
-        options = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == 'NFO'].copy()
-        
-        # Filter by the underlying stock/index name
-        symbol = symbol.upper()
-        filtered_options = options[options['name'].str.upper() == symbol]
-        
-        if filtered_options.empty:
-            logger.warning(f"No options found for {symbol}")
-            return {"CE": None, "PE": None}
-        
-        # Calculate the appropriate strike price interval based on price
-        if current_price < 100:
-            strike_interval = 5
-        elif current_price < 1000:
-            strike_interval = 10
-        elif current_price < 10000:
-            strike_interval = 50
+        if primary_ce is None or primary_pe is None:
+            need_new_options = True
+            logger.info(f"Missing primary options for {symbol}")
+        elif primary_ce in options_data and primary_pe in options_data:
+            # Check if current options are still ATM
+            ce_strike = float(options_data[primary_ce].get("strike", 0))
+            pe_strike = float(options_data[primary_pe].get("strike", 0))
+            
+            # Calculate appropriate strike interval
+            if current_price < 100:
+                strike_interval = 5
+            elif current_price < 1000:
+                strike_interval = 10
+            elif current_price < 10000:
+                strike_interval = 50
+            else:
+                strike_interval = 100
+            
+            # Check if strikes are still close to current price
+            ce_distance = abs(current_price - ce_strike)
+            pe_distance = abs(current_price - pe_strike)
+            
+            if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
+                need_new_options = True
+                logger.info(f"Options for {symbol} too far from current price (CE distance: {ce_distance:.2f}, PE distance: {pe_distance:.2f})")
+            
+            # Check if options are using fallback data
+            elif any(options_data[opt].get("using_fallback", False) for opt in [primary_ce, primary_pe]):
+                need_new_options = True
+                logger.info(f"Options for {symbol} are using fallback data, finding better options")
         else:
-            strike_interval = 100
-            
-        # Round to nearest appropriate interval
-        atm_strike = round(current_price / strike_interval) * strike_interval
-        logger.info(f"Calculated ATM strike price: {atm_strike}")
+            need_new_options = True
+            logger.info(f"Options data missing for {symbol}")
         
-        # Extract expiry dates and sort them (closest first)
-        try:
-            # Convert expiry strings to datetime objects for proper sorting
-            filtered_options['expiry_date'] = pd.to_datetime(filtered_options['expiry'], format='%d-%b-%y')
-            # Get unique expiry dates sorted by date
-            expiry_dates = sorted(filtered_options['expiry'].unique(), 
-                                key=lambda x: pd.to_datetime(x, format='%d-%b-%y'))
-        except:
-            # If datetime conversion fails, just sort the strings
-            expiry_dates = sorted(filtered_options['expiry'].unique())
-        
-        if len(expiry_dates) == 0:
-            logger.warning(f"No expiry dates found for {symbol}")
-            return {"CE": None, "PE": None}
-            
-        # Get the closest expiry date
-        closest_expiry = expiry_dates[0]
-        logger.info(f"Selected expiry date: {closest_expiry}")
-        
-        # Filter options by the closest expiry
-        expiry_options = filtered_options[filtered_options['expiry'] == closest_expiry]
-        
-        # Extract CE options
-        ce_options = expiry_options[expiry_options['symbol'].str.endswith('CE')]
-        
-        # Extract PE options
-        pe_options = expiry_options[expiry_options['symbol'].str.endswith('PE')]
-        
-        # Find closest strikes to ATM
-        closest_ce = None
-        closest_pe = None
-        
-        if not ce_options.empty:
-            # Calculate distance to ATM strike
-            ce_options['strike_distance'] = abs(ce_options['strike'] - atm_strike)
-            closest_ce_row = ce_options.loc[ce_options['strike_distance'].idxmin()]
-            closest_ce = closest_ce_row.to_dict()
-            logger.info(f"Found CE option: {closest_ce['symbol']} with token {closest_ce['token']} at strike {closest_ce['strike']}")
-        
-        if not pe_options.empty:
-            # Calculate distance to ATM strike
-            pe_options['strike_distance'] = abs(pe_options['strike'] - atm_strike)
-            closest_pe_row = pe_options.loc[pe_options['strike_distance'].idxmin()]
-            closest_pe = closest_pe_row.to_dict()
-            logger.info(f"Found PE option: {closest_pe['symbol']} with token {closest_pe['token']} at strike {closest_pe['strike']}")
-        
-        return {"CE": closest_ce, "PE": closest_pe}
-        
-    except Exception as e:
-        logger.error(f"Error finding ATM options: {e}", exc_info=True)
-        return {"CE": None, "PE": None}
-
-def find_and_add_atm_options(symbol, current_price):
-    """
-    Find and add ATM options for a stock
+        # Get new options if needed
+        if need_new_options:
+            find_and_add_atm_options(symbol, current_price)
     
-    Args:
-        symbol (str): Stock or index symbol
-        current_price (float): Current price of the stock/index
-        
-    Returns:
-        dict: Dictionary with CE and PE option keys
-    """
-    if current_price is None or current_price <= 0:
-        logger.error(f"Cannot find options: Invalid price {current_price} for {symbol}")
-        return {"CE": None, "PE": None}
-    
-    # Find ATM options in CSV
-    atm_options = find_atm_options_in_csv(symbol, current_price)
-    
-    # Results to track added options
-    added_options = {"CE": None, "PE": None}
-    
-    # Process CE option
-    ce_option_data = atm_options.get("CE")
-    if ce_option_data:
-        ce_success = add_option_from_csv_data(ce_option_data)
-        if ce_success:
-            # Create unique option key based on the data
-            try:
-                expiry_date = ce_option_data.get('expiry', '').replace('-', '')
-                # Handle month format (convert Apr to APR if needed)
-                month_match = re.search(r'([A-Za-z]+)', expiry_date)
-                if month_match:
-                    month = month_match.group(1).upper()
-                    expiry_date = expiry_date.replace(month_match.group(1), month)
-            except:
-                # If regex fails, use expiry as is
-                expiry_date = ce_option_data.get('expiry', '')
-                
-            strike = str(int(ce_option_data.get('strike', 0)))
-            ce_key = f"{symbol}_{expiry_date}_{strike}_CE"
-            
-            # Set as primary CE option
-            if symbol in stocks_data:
-                stocks_data[symbol]["primary_ce"] = ce_key
-                logger.info(f"Set {ce_key} as primary CE option for {symbol}")
-                
-                # Fetch option data if broker connected
-                if broker_connected:
-                    fetch_option_data(ce_key)
-                
-            added_options["CE"] = ce_key
-    
-    # Process PE option
-    pe_option_data = atm_options.get("PE")
-    if pe_option_data:
-        pe_success = add_option_from_csv_data(pe_option_data)
-        if pe_success:
-            # Create unique option key based on the data
-            try:
-                expiry_date = pe_option_data.get('expiry', '').replace('-', '')
-                # Handle month format (convert Apr to APR if needed)
-                month_match = re.search(r'([A-Za-z]+)', expiry_date)
-                if month_match:
-                    month = month_match.group(1).upper()
-                    expiry_date = expiry_date.replace(month_match.group(1), month)
-            except:
-                # If regex fails, use expiry as is
-                expiry_date = pe_option_data.get('expiry', '')
-                
-            strike = str(int(pe_option_data.get('strike', 0)))
-            pe_key = f"{symbol}_{expiry_date}_{strike}_PE"
-            
-            # Set as primary PE option
-            if symbol in stocks_data:
-                stocks_data[symbol]["primary_pe"] = pe_key
-                logger.info(f"Set {pe_key} as primary PE option for {symbol}")
-                
-                # Fetch option data if broker connected
-                if broker_connected:
-                    fetch_option_data(pe_key)
-                
-            added_options["PE"] = pe_key
-    
-    logger.info(f"Added options for {symbol}: CE={added_options.get('CE')}, PE={added_options.get('PE')}")
-    return added_options
-def initialize_from_csv():
-    """
-    Initialize with default stocks only, without loading everything from CSV
-    """
-    # Initialize global DataFrame for CSV data
-    global tokens_and_symbols_df
-    tokens_and_symbols_df = None
-    
-    # Load CSV data
-    load_tokens_and_symbols_from_csv()
-    
-    # Add default stocks
-    for stock in DEFAULT_STOCKS:
-        add_stock_from_csv_data({
-            'token': stock["token"],
-            'symbol': stock["symbol"],
-            'name': stock["symbol"],  # Use symbol as name for default stocks
-            'exch_seg': stock["exchange"]
-        })
-        
-    logger.info(f"Initialization complete with default stocks")
-    
+    # Update timestamp
+    last_option_selection_update = current_time
 
 # ============ Technical Indicators ============
 def calculate_rsi(data, period=RSI_PERIOD):
@@ -2474,7 +2204,7 @@ def calculate_support_resistance(symbol):
             logger.warning(f"Not enough valid price data for {symbol} to calculate S/R: {len(prices)} points")
             return False
         
-        # ===== Improved S/R calculation algorithm =====
+# ===== Improved S/R calculation algorithm =====
         # 1. Identify local maxima and minima using rolling window approach
         window_size = min(21, len(prices) // 10)  # Adaptive window size
         
@@ -2773,6 +2503,57 @@ def determine_pcr_trend(symbol):
         else:
             pcr_data[symbol]["trend"] = "NEUTRAL"
 
+def calculate_pcr_strength(symbol):
+    """
+    Calculate PCR strength based on current value and trend
+    
+    Args:
+        symbol (str): Symbol to calculate PCR strength for
+    """
+    if symbol not in pcr_data:
+        return
+    
+    pcr_val = pcr_data[symbol]["current"]
+    pcr_trend = pcr_data[symbol]["trend"]
+    
+    # Base strength calculation
+    if pcr_val < PCR_BULLISH_THRESHOLD:
+        # Bullish indication (lower PCR)
+        deviation = (PCR_BULLISH_THRESHOLD - pcr_val) / PCR_BULLISH_THRESHOLD
+        strength = min(deviation * 10, 1.0)  # Scale to max 1.0
+    elif pcr_val > PCR_BEARISH_THRESHOLD:
+        # Bearish indication (higher PCR)
+        deviation = (pcr_val - PCR_BEARISH_THRESHOLD) / PCR_BEARISH_THRESHOLD
+        strength = -min(deviation * 10, 1.0)  # Negative for bearish, scale to max -1.0
+    else:
+        # Neutral zone
+        mid_point = (PCR_BULLISH_THRESHOLD + PCR_BEARISH_THRESHOLD) / 2
+        if pcr_val < mid_point:
+            # Slightly bullish
+            strength = 0.2
+        elif pcr_val > mid_point:
+            # Slightly bearish
+            strength = -0.2
+        else:
+            strength = 0
+    
+    # Enhance strength based on trend
+    if pcr_trend == "RISING" and strength < 0:
+        # Strengthening bearish signal
+        strength *= 1.2
+    elif pcr_trend == "FALLING" and strength > 0:
+        # Strengthening bullish signal
+        strength *= 1.2
+    elif pcr_trend == "RISING" and strength > 0:
+        # Weakening bullish signal
+        strength *= 0.8
+    elif pcr_trend == "FALLING" and strength < 0:
+        # Weakening bearish signal
+        strength *= 0.8
+    
+    # Update PCR strength
+    pcr_data[symbol]["strength"] = strength
+
 def update_all_pcr_data():
     """Update PCR data for all stocks more efficiently."""
     global pcr_data, last_pcr_update
@@ -2813,6 +2594,115 @@ def update_all_pcr_data():
     update_market_sentiment()
     
     last_pcr_update = current_time
+
+@rate_limited
+def fetch_option_chain(symbol):
+    """Generate simulated option chain for PCR calculation with realistic characteristics"""
+    try:
+        # Get current price for the symbol
+        current_price = None
+        if symbol in stocks_data:
+            current_price = stocks_data[symbol].get("ltp")
+        
+        if current_price is None:
+            current_price = 100  # Default value
+        
+        # Generate strikes around current price with proper intervals
+        if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+            # For indices, use 50-point interval
+            base_strike = round(current_price / 50) * 50
+            strike_interval = 50
+            num_strikes = 10  # 5 strikes below, 5 above
+        elif current_price > 1000:
+            # For high-priced stocks
+            base_strike = round(current_price / 20) * 20
+            strike_interval = 20
+            num_strikes = 10
+        else:
+            # For regular stocks
+            base_strike = round(current_price / 10) * 10
+            strike_interval = 10
+            num_strikes = 10
+        
+        strikes = [base_strike + (i - num_strikes//2) * strike_interval for i in range(num_strikes)]
+        
+        # Generate option chain
+        option_chain = []
+        total_ce_oi = 0
+        total_pe_oi = 0
+        
+        for strike in strikes:
+            # Calculate distance from ATM
+            distance_factor = abs(strike - current_price) / current_price
+            
+            # For realistic OI distribution - higher near ATM
+            atm_factor = max(0.5, 1 - distance_factor * 3)
+            
+            # Slight bias based on whether strike is above or below current price
+            if strike > current_price:
+                ce_bias = 0.9  # Less CE OI above current price
+                pe_bias = 1.1  # More PE OI above current price
+            else:
+                ce_bias = 1.1  # More CE OI below current price
+                pe_bias = 0.9  # Less PE OI below current price
+            
+            # Generate OI data with randomness
+            ce_oi = int(random.random() * 10000 * atm_factor * ce_bias)
+            pe_oi = int(random.random() * 10000 * atm_factor * pe_bias)
+            
+            total_ce_oi += ce_oi
+            total_pe_oi += pe_oi
+            
+            # Calculate option prices with realistic characteristics
+            if strike > current_price:
+                # Out of the money CE, in the money PE
+                ce_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
+                pe_price = max(0.1, strike - current_price + (current_price * 0.02))
+            else:
+                # In the money CE, out of the money PE
+                ce_price = max(0.1, current_price - strike + (current_price * 0.02))
+                pe_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
+            
+            # CE option
+            ce_option = {
+                "optionType": "CE",
+                "strikePrice": strike,
+                "openInterest": ce_oi,
+                "lastPrice": ce_price
+            }
+            option_chain.append(ce_option)
+            
+            # PE option
+            pe_option = {
+                "optionType": "PE",
+                "strikePrice": strike,
+                "openInterest": pe_oi,
+                "lastPrice": pe_price
+            }
+            option_chain.append(pe_option)
+        
+        # Add total OI to the option chain data for easier PCR calculation
+        option_chain.append({"totalCEOI": total_ce_oi, "totalPEOI": total_pe_oi})
+        
+        return option_chain
+    except Exception as e:
+        logger.error(f"Error generating simulated option chain for {symbol}: {e}")
+        return None
+
+def get_pcr_signal(symbol):
+    """Generate trading signal based on PCR value and trend."""
+    if symbol not in pcr_data:
+        return "NEUTRAL", "badge bg-secondary"
+    
+    pcr_value = pcr_data[symbol]["current"]
+    trend = pcr_data[symbol]["trend"]
+    
+    if pcr_value > PCR_BEARISH_THRESHOLD and trend == "RISING":
+        return "BEARISH", "badge bg-danger"
+    elif pcr_value < PCR_BULLISH_THRESHOLD and trend == "FALLING":
+        return "BULLISH", "badge bg-success"
+    else:
+        return "NEUTRAL", "badge bg-secondary"
 
 def update_market_sentiment():
     """Update market sentiment based on technical indicators and PCR with improved algorithms."""
@@ -2960,119 +2850,7 @@ def update_market_sentiment():
         
     logger.info(f"Updated market sentiment. Overall: {market_sentiment['overall']}")
 
-# ============ PCR Analysis ============
-@rate_limited
-def fetch_option_chain(symbol):
-    """Generate simulated option chain for PCR calculation with realistic characteristics"""
-    try:
-        # Get current price for the symbol
-        current_price = None
-        if symbol in stocks_data:
-            current_price = stocks_data[symbol].get("ltp")
-        
-        if current_price is None:
-            current_price = 100  # Default value
-        
-        # Generate strikes around current price with proper intervals
-        if symbol in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
-            # For indices, use 50-point interval
-            base_strike = round(current_price / 50) * 50
-            strike_interval = 50
-            num_strikes = 10  # 5 strikes below, 5 above
-        elif current_price > 1000:
-            # For high-priced stocks
-            base_strike = round(current_price / 20) * 20
-            strike_interval = 20
-            num_strikes = 10
-        else:
-            # For regular stocks
-            base_strike = round(current_price / 10) * 10
-            strike_interval = 10
-            num_strikes = 10
-        
-        strikes = [base_strike + (i - num_strikes//2) * strike_interval for i in range(num_strikes)]
-        
-        # Generate option chain
-        option_chain = []
-        total_ce_oi = 0
-        total_pe_oi = 0
-        
-        for strike in strikes:
-            # Calculate distance from ATM
-            distance_factor = abs(strike - current_price) / current_price
-            
-            # For realistic OI distribution - higher near ATM
-            atm_factor = max(0.5, 1 - distance_factor * 3)
-            
-            # Slight bias based on whether strike is above or below current price
-            if strike > current_price:
-                ce_bias = 0.9  # Less CE OI above current price
-                pe_bias = 1.1  # More PE OI above current price
-            else:
-                ce_bias = 1.1  # More CE OI below current price
-                pe_bias = 0.9  # Less PE OI below current price
-            
-            # Generate OI data with randomness
-            ce_oi = int(random.random() * 10000 * atm_factor * ce_bias)
-            pe_oi = int(random.random() * 10000 * atm_factor * pe_bias)
-            
-            total_ce_oi += ce_oi
-            total_pe_oi += pe_oi
-            
-            # Calculate option prices with realistic characteristics
-            if strike > current_price:
-                # Out of the money CE, in the money PE
-                ce_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
-                pe_price = max(0.1, strike - current_price + (current_price * 0.02))
-            else:
-                # In the money CE, out of the money PE
-                ce_price = max(0.1, current_price - strike + (current_price * 0.02))
-                pe_price = max(0.1, (current_price * 0.03) * (1 - distance_factor * 0.8))
-            
-            # CE option
-            ce_option = {
-                "optionType": "CE",
-                "strikePrice": strike,
-                "openInterest": ce_oi,
-                "lastPrice": ce_price
-            }
-            option_chain.append(ce_option)
-            
-            # PE option
-            pe_option = {
-                "optionType": "PE",
-                "strikePrice": strike,
-                "openInterest": pe_oi,
-                "lastPrice": pe_price
-            }
-            option_chain.append(pe_option)
-        
-        # Add total OI to the option chain data for easier PCR calculation
-        option_chain.append({"totalCEOI": total_ce_oi, "totalPEOI": total_pe_oi})
-        
-        return option_chain
-    except Exception as e:
-        logger.error(f"Error generating simulated option chain for {symbol}: {e}")
-        return None
-
-
-def get_pcr_signal(symbol):
-    """Generate trading signal based on PCR value and trend."""
-    if symbol not in pcr_data:
-        return "NEUTRAL", "badge bg-secondary"
-    
-    pcr_value = pcr_data[symbol]["current"]
-    trend = pcr_data[symbol]["trend"]
-    
-    if pcr_value > PCR_BEARISH_THRESHOLD and trend == "RISING":
-        return "BEARISH", "badge bg-danger"
-    elif pcr_value < PCR_BULLISH_THRESHOLD and trend == "FALLING":
-        return "BULLISH", "badge bg-success"
-    else:
-        return "NEUTRAL", "badge bg-secondary"
-
 # ============ Strategy Prediction ============
-# ============ Strategy Prediction Functions ============
 def predict_strategy_for_stock(symbol):
     """
     Predict the most suitable trading strategy for a stock based on its 
@@ -3935,7 +3713,7 @@ def update_dynamic_target(option_key):
         if (option_type == "CE" and current_momentum < 0) or (option_type == "PE" and current_momentum > 0):
             momentum_factor = -momentum_factor  # Negative adjustment for counter-trend momentum
         
-       # Consider parent stock momentum (with lower weight)
+        # Consider parent stock momentum (with lower weight)
         parent_factor = min(abs(parent_momentum) * 0.05, 0.2)
         if (option_type == "CE" and parent_momentum < 0) or (option_type == "PE" and parent_momentum > 0):
             parent_factor = -parent_factor  # Negative adjustment for counter-trend parent momentum
@@ -4103,8 +3881,519 @@ def apply_trading_strategy():
             
             # Small delay between entries
             time.sleep(0.1)
-# ============ Data Fetching ============
-# ============ Data Fetching ============
+
+# ============ News Monitoring Functions ============
+def fetch_news_from_sources():
+    """
+    Fetch financial news from various free sources
+    Returns a list of news items with title, description, source, and timestamp
+    """
+    news_items = []
+    
+    try:
+        # Check if feedparser is available
+        if 'feedparser' in sys.modules:
+            # Fetch from Yahoo Finance RSS
+            yahoo_feed = feedparser.parse('https://finance.yahoo.com/news/rssindex')
+            for entry in yahoo_feed.entries[:15]:  # Get top 15 news (increased from 10)
+                news_items.append({
+                    'title': entry.title,
+                    'description': entry.get('description', ''),
+                    'source': 'Yahoo Finance',
+                    'timestamp': datetime.now(),
+                    'url': entry.link
+                })
+            
+            # Add Moneycontrol news (India specific)
+            try:
+                mc_feed = feedparser.parse('https://www.moneycontrol.com/rss/latestnews.xml')
+                for entry in mc_feed.entries[:15]:  # Get top 15 news (increased from 10)
+                    news_items.append({
+                        'title': entry.title,
+                        'description': entry.get('description', ''),
+                        'source': 'Moneycontrol',
+                        'timestamp': datetime.now(),
+                        'url': entry.link
+                    })
+            except Exception as e:
+                logger.warning(f"Error fetching Moneycontrol news: {e}")
+                
+            # Add Economic Times news (India specific)
+            try:
+                et_feed = feedparser.parse('https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms')
+                for entry in et_feed.entries[:15]:  # Get top 15 news
+                    news_items.append({
+                        'title': entry.title,
+                        'description': entry.get('description', ''),
+                        'source': 'Economic Times',
+                        'timestamp': datetime.now(),
+                        'url': entry.link
+                    })
+            except Exception as e:
+                logger.warning(f"Error fetching Economic Times news: {e}")
+        
+        else:
+            # Fallback to a simplified approach if feedparser is not available
+            # Fetch some placeholder news or latest headlines
+            logger.warning("feedparser not available, using placeholder news")
+            news_items.append({
+                'title': 'Market Update: NIFTY shows strong momentum',
+                'description': 'Market analysis indicates bullish trend for NIFTY',
+                'source': 'Dashboard',
+                'timestamp': datetime.now(),
+                'url': '#'
+            })
+        
+        logger.info(f"Fetched {len(news_items)} news items")
+        return news_items
+    except Exception as e:
+        logger.error(f"Error fetching news: {e}")
+        return []
+
+def analyze_news_for_stocks(news_items, stock_universe):
+    """
+    Analyze news items to find mentions of stocks and determine sentiment
+    
+    Args:
+        news_items: List of news items with title and description
+        stock_universe: List of stock symbols to look for
+    
+    Returns:
+        dict: Dictionary of stocks with their sentiment scores
+    """
+    stock_mentions = {}
+    
+    try:
+        # Import regex module
+        import re
+        
+        for item in news_items:
+            title = item.get('title', '')
+            description = item.get('description', '')
+            full_text = f"{title} {description}"
+            
+            # Enhanced sentiment analysis with more keywords and weightings
+            positive_words = {
+                'surge': 1.5, 'jump': 1.5, 'rise': 1.0, 'gain': 1.0, 'profit': 1.2, 
+                'up': 0.8, 'higher': 1.0, 'bull': 1.3, 'positive': 1.0, 
+                'outperform': 1.4, 'rally': 1.5, 'strong': 1.2, 'beat': 1.3, 
+                'exceed': 1.4, 'growth': 1.2, 'soar': 1.7, 'boost': 1.2, 
+                'upgrade': 1.5, 'breakthrough': 1.6, 'opportunity': 1.1,
+                'record high': 1.8, 'buy': 1.3, 'accumulate': 1.2
+            }
+            
+            negative_words = {
+                'fall': 1.5, 'drop': 1.5, 'decline': 1.0, 'loss': 1.2, 'down': 0.8, 
+                'lower': 1.0, 'bear': 1.3, 'negative': 1.0, 'underperform': 1.4, 
+                'weak': 1.2, 'miss': 1.3, 'disappointing': 1.4, 'sell-off': 1.6, 
+                'crash': 1.8, 'downgrade': 1.5, 'warning': 1.3, 'risk': 1.0,
+                'trouble': 1.4, 'concern': 1.1, 'caution': 0.9, 'burden': 1.2,
+                'record low': 1.8, 'sell': 1.3, 'reduce': 1.2
+            }
+            
+            # Calculate weighted sentiment score
+            pos_score = 0
+            neg_score = 0
+            
+            # Check for positive words with proximity bonus
+            for word, weight in positive_words.items():
+                if word.lower() in full_text.lower():
+                    # Count occurrences
+                    count = full_text.lower().count(word.lower())
+                    # Add to score with weight
+                    pos_score += count * weight
+                    
+                    # Title bonus - words in title have more impact
+                    if word.lower() in title.lower():
+                        pos_score += 0.5 * weight
+            
+            # Check for negative words with proximity bonus
+            for word, weight in negative_words.items():
+                if word.lower() in full_text.lower():
+                    # Count occurrences
+                    count = full_text.lower().count(word.lower())
+                    # Add to score with weight
+                    neg_score += count * weight
+                    
+                    # Title bonus - words in title have more impact
+                    if word.lower() in title.lower():
+                        neg_score += 0.5 * weight
+            
+            # Calculate sentiment score (-1 to 1)
+            if pos_score + neg_score > 0:
+                sentiment = (pos_score - neg_score) / (pos_score + neg_score)
+            else:
+                sentiment = 0  # Neutral if no sentiment words found
+            
+            # Improved stock mention detection
+            for stock in stock_universe:
+                # Look for exact stock symbol with word boundaries
+                pattern = r'\b' + re.escape(stock) + r'\b'
+                
+                # Also check for common variations of the stock name
+                stock_variations = [stock]
+                
+                # Add variations for common Indian stocks
+                if stock == "RELIANCE":
+                    stock_variations.extend(["Reliance Industries", "RIL"])
+                elif stock == "INFY":
+                    stock_variations.extend(["Infosys", "Infosys Technologies"])
+                elif stock == "TCS":
+                    stock_variations.extend(["Tata Consultancy", "Tata Consultancy Services"])
+                elif stock == "HDFCBANK":
+                    stock_variations.extend(["HDFC Bank", "Housing Development Finance Corporation"])
+                elif stock == "SBIN":
+                    stock_variations.extend(["State Bank of India", "SBI"])
+                
+                # Check for any variation
+                found = False
+                for variation in stock_variations:
+                    var_pattern = r'\b' + re.escape(variation) + r'\b'
+                    if re.search(var_pattern, full_text, re.IGNORECASE):
+                        found = True
+                        break
+                
+                if found:
+                    if stock not in stock_mentions:
+                        stock_mentions[stock] = []
+                    
+                    stock_mentions[stock].append({
+                        'sentiment': sentiment,
+                        'title': title,
+                        'source': item.get('source', 'Unknown'),
+                        'timestamp': item.get('timestamp', datetime.now()),
+                        'url': item.get('url', '')
+                    })
+                    logger.info(f"Found mention of {stock} in news with sentiment {sentiment:.2f}")
+        
+        logger.info(f"Found mentions of {len(stock_mentions)} stocks in news")
+        return stock_mentions
+    except Exception as e:
+        logger.error(f"Error analyzing news: {e}")
+        return {}
+
+def generate_news_trading_signals(stock_mentions):
+    """
+    Generate trading signals based on news mentions and sentiment
+    
+    Args:
+        stock_mentions: Dictionary of stocks with their sentiment scores
+    
+    Returns:
+        list: List of trading signals
+    """
+    trading_signals = []
+    
+    for stock, mentions in stock_mentions.items():
+        if not mentions:
+            continue
+        
+        # Calculate average sentiment
+        avg_sentiment = sum(mention['sentiment'] for mention in mentions) / len(mentions)
+        
+        # Determine confidence based on number of mentions and sentiment strength
+        mentions_factor = min(len(mentions) / 3, 1.0)  # Scale up to 3 mentions
+        sentiment_factor = min(abs(avg_sentiment) * 1.5, 1.0)  # Scale sentiment impact
+        
+        # Combined confidence score
+        confidence = (mentions_factor * 0.6) + (sentiment_factor * 0.4)  # 60% mentions, 40% sentiment strength
+        
+        # Determine trading action based on sentiment
+        if avg_sentiment > NEWS_SENTIMENT_THRESHOLD:  # Strong positive sentiment
+            action = 'BUY_CE'  # Buy Call option
+            
+            trading_signals.append({
+                'stock': stock,
+                'action': action,
+                'sentiment': avg_sentiment,
+                'confidence': confidence,
+                'news_count': len(mentions),
+                'latest_news': mentions[0]['title'],
+                'source': mentions[0]['source'],
+                'timestamp': mentions[0]['timestamp']
+            })
+            logger.info(f"Generated BUY_CE signal for {stock} with confidence {confidence:.2f}")
+            
+        elif avg_sentiment < -NEWS_SENTIMENT_THRESHOLD:  # Strong negative sentiment
+            action = 'BUY_PE'  # Buy Put option
+            
+            trading_signals.append({
+                'stock': stock,
+                'action': action,
+                'sentiment': avg_sentiment,
+                'confidence': confidence,
+                'news_count': len(mentions),
+                'latest_news': mentions[0]['title'],
+                'source': mentions[0]['source'],
+                'timestamp': mentions[0]['timestamp']
+            })
+            logger.info(f"Generated BUY_PE signal for {stock} with confidence {confidence:.2f}")
+    
+    # Sort signals by confidence (highest first)
+    trading_signals.sort(key=lambda x: x['confidence'], reverse=True)
+    
+    return trading_signals
+
+def add_news_mentioned_stocks():
+    """Add stocks that are mentioned in news but not currently tracked"""
+    if not news_data.get("mentions"):
+        return
+    
+    # Get all mentioned stocks
+    mentioned_stocks = set(news_data["mentions"].keys())
+    
+    # Get currently tracked stocks
+    tracked_stocks = set(stocks_data.keys())
+    
+    # Find stocks to add (mentioned but not tracked)
+    stocks_to_add = mentioned_stocks - tracked_stocks
+    
+    # Add each stock
+    for stock in stocks_to_add:
+        # Skip if it doesn't look like a valid stock symbol
+        if not stock.isalpha() or len(stock) < 2:
+            continue
+            
+        logger.info(f"Adding stock {stock} based on news mentions")
+        add_stock(stock, None, "NSE", "STOCK")
+        
+        # Try to fetch data immediately
+        if broker_connected:
+            fetch_stock_data(stock)
+
+def execute_news_based_trades():
+    """Execute trades based on news analysis"""
+    if not strategy_settings["NEWS_ENABLED"]:
+        logger.info("News-based trading is disabled")
+        return
+    
+    if not broker_connected:
+        logger.warning("Cannot execute news-based trades: Not connected to broker")
+        return
+    
+    # Check if we've hit the maximum trades for the day
+    if trading_state.trades_today >= MAX_TRADES_PER_DAY:
+        logger.info("Maximum trades for the day reached, skipping news-based trades")
+        return
+    
+    # Check if we've hit the maximum loss percentage for the day
+    if trading_state.daily_pnl <= -MAX_LOSS_PERCENTAGE * trading_state.capital / 100:
+        logger.info("Maximum daily loss reached, skipping news-based trades")
+        return
+    
+    # Limit to top 3 highest confidence signals
+    top_signals = sorted(news_data["trading_signals"], key=lambda x: x['confidence'], reverse=True)[:3]
+    
+    for signal in top_signals:
+        stock = signal['stock']
+        action = signal['action']
+        confidence = signal['confidence']
+        news_title = signal['latest_news']
+        
+        # Skip trades with low confidence
+        if confidence < NEWS_CONFIDENCE_THRESHOLD:
+            logger.info(f"Skipping news-based trade for {stock} due to low confidence ({confidence:.2f})")
+            continue
+        
+        # Skip if the news is too old
+        signal_time = signal['timestamp']
+        if isinstance(signal_time, datetime):
+            if (datetime.now() - signal_time).total_seconds() > NEWS_MAX_AGE:
+                logger.info(f"Skipping news-based trade for {stock} - news is too old")
+                continue
+        
+        # Add stock if not already tracking
+        if stock not in stocks_data:
+            logger.info(f"Adding stock {stock} based on news")
+            add_stock(stock, None, "NSE", "STOCK")
+        
+        # Wait for stock data to be loaded
+        attempt = 0
+        while stock in stocks_data and stocks_data[stock]["ltp"] is None and attempt < 10:
+            logger.info(f"Waiting for {stock} data to load... (attempt {attempt+1})")
+            time.sleep(0.5)
+            attempt += 1
+        
+        if stock not in stocks_data or stocks_data[stock]["ltp"] is None:
+            logger.warning(f"Could not get price data for {stock}, skipping trade")
+            continue
+        
+        # Determine option type
+        option_type = "CE" if action == "BUY_CE" else "PE"
+        
+        # Find appropriate option
+        options = find_and_add_options(stock)
+        option_key = options.get(option_type)
+        
+        if not option_key:
+            logger.warning(f"Could not find suitable {option_type} option for {stock}")
+            continue
+        
+        # Check if option is already in active trade
+        if trading_state.active_trades.get(option_key, False):
+            logger.info(f"Already in a trade for {stock} {option_type}, skipping")
+            continue
+        
+        # Execute the trade
+        strategy_type = "NEWS"  # Special strategy type for news-based trades
+        success = enter_trade(option_key, strategy_type, "NEWS")
+        
+        if success:
+            logger.info(f"Executed news-based trade for {stock} {option_type} based on: {news_title}")
+            
+            # Update news signal to avoid duplicate trades
+            signal['executed'] = True
+            signal['execution_time'] = datetime.now()
+            signal['option_key'] = option_key
+            
+            # We only take a few news-based trades at a time
+            break
+
+def update_news_data():
+    """Update news data and generate trading signals"""
+    global news_data, last_news_update
+    
+    current_time = datetime.now()
+    if (current_time - last_news_update).total_seconds() < NEWS_CHECK_INTERVAL:
+        return
+    
+    # Get all tracked stocks as the universe
+    stock_universe = list(stocks_data.keys())
+    
+    # Add a list of common Indian stocks/indices
+    common_stocks = [
+        "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "WIPRO", "SBIN", 
+        "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ADANIPORTS", "HINDUNILVR",
+        "AXISBANK", "SUNPHARMA", "KOTAKBANK", "ONGC", "MARUTI", "BHARTIARTL"
+    ]
+    
+    for stock in common_stocks:
+        if stock not in stock_universe:
+            stock_universe.append(stock)
+    
+    # Add major indices
+    indices = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
+    for idx in indices:
+        if idx not in stock_universe:
+            stock_universe.append(idx)
+    
+    # Fetch news
+    news_items = fetch_news_from_sources()
+    
+    # Only update if we got new news items
+    if news_items:
+        # Analyze news for stock mentions
+        stock_mentions = analyze_news_for_stocks(news_items, stock_universe)
+        
+        # Generate trading signals
+        trading_signals = generate_news_trading_signals(stock_mentions)
+        
+        # Update news data
+        news_data["items"] = news_items
+        news_data["mentions"] = stock_mentions
+        news_data["trading_signals"] = trading_signals
+        news_data["last_updated"] = current_time
+        
+        # Update UI data store
+        ui_data_store['news'] = {
+            'items': news_items[:5],  # Store the 5 most recent items
+            'mentions': stock_mentions,
+            'signals': trading_signals,
+            'last_updated': current_time.strftime('%H:%M:%S')
+        }
+        
+        # Add stocks mentioned in news
+        add_news_mentioned_stocks()
+        
+        # Try to execute trades if any signals were generated
+        if trading_signals and broker_connected:
+            execute_news_based_trades()
+    
+    last_news_update = current_time
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.DARKLY], 
+    suppress_callback_exceptions=True,
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+    ]
+)
+app.title = "Options Trading Dashboard"
+
+# Define custom CSS for smooth transitions
+app_css = '''
+/* Base transitions */
+.dynamic-update {
+    transition: all 0.3s ease-in-out !important;
+}
+
+/* Price updates */
+.price-element {
+    transition: color 0.3s ease, background-color 0.3s ease !important;
+}
+
+/* Badge transitions */
+.badge-transition {
+    transition: background-color 0.3s ease, color 0.3s ease !important;
+}
+
+/* Hardware acceleration to prevent flickering */
+.no-flicker {
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+
+/* Smooth progress bar updates */
+.progress-bar {
+    transition: width 0.3s ease-in-out !important;
+}
+
+/* Value updates */
+.value-update {
+    transition: opacity 0.3s, transform 0.3s, color 0.3s;
+}
+
+/* Card updates */
+.card-update {
+    transition: border-color 0.3s ease-in-out;
+}
+
+/* Remove blinking animations */
+.highlight-positive, .highlight-negative {
+    animation: none !important;
+    transition: background-color 0.3s ease-in-out;
+}
+
+/* Color transitions */
+.color-transition {
+    transition: color 0.3s ease-in-out;
+}
+'''
+
+# Override the default index string to include custom CSS
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            ''' + app_css + '''
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+# ============ Broker Connection Functions ============
 def connect_to_broker():
     """Connect to the broker API with improved error handling and retry logic."""
     global smart_api, broker_connected, broker_error_message, broker_connection_retry_time, config, last_connection_time
@@ -4270,11 +4559,10 @@ def refresh_session_if_needed():
         smart_api = None
         return connect_to_broker()
 
-# Function to search for symbol tokens
 @rate_limited
 def search_symbols(search_text, exchange=None):
     """
-    Enhanced symbol search with exact matching prioritized
+    Enhanced symbol search with CSV-based lookup
     
     Args:
         search_text (str): Text to search for
@@ -4283,66 +4571,58 @@ def search_symbols(search_text, exchange=None):
     Returns:
         list: List of matching symbols with exact matches first
     """
-    global smart_api, broker_connected, config
-    
-    if not search_text:
-        logger.warning("Empty search text provided")
-        return []
-    
-    # Make search text uppercase
+    # Make search text uppercase for case-insensitive matching
     search_text = search_text.strip().upper()
     logger.info(f"Searching for symbol: '{search_text}'")
     
-    # Connect to broker if not already connected
-    if not broker_connected or smart_api is None:
-        if not connect_to_broker():
-            logger.warning("Cannot search symbols: Not connected to broker")
-            return []
-    
-    # Use specified exchange or default from config
-    target_exchange = exchange or config.exchange
-    
+    # Use CSV-based search instead of API
     try:
-        # Perform the search
-        search_resp = smart_api.searchScrip(exchange=target_exchange, searchtext=search_text)
+        global tokens_and_symbols_df
         
-        if isinstance(search_resp, dict) and search_resp.get("status"):
-            # Extract matching symbols
-            matches = search_resp.get("data", [])
-            
-            if matches:
-                logger.info(f"Found {len(matches)} potential matches for '{search_text}'")
-                
-                # Separate exact and partial matches
-                exact_matches = []
-                partial_matches = []
-                
-                for match in matches:
-                    match_symbol = match.get("symbol", "").upper()
-                    match_name = match.get("name", "").upper()
-                    
-                    # Check for exact match
-                    if match_symbol == search_text or match_name == search_text:
-                        exact_matches.append(match)
-                    else:
-                        partial_matches.append(match)
-                
-                # Return exact matches first, then partial matches
-                return exact_matches + partial_matches
-            else:
-                logger.debug(f"No matches found for '{search_text}'")
+        # If DataFrame not loaded yet, load it
+        if tokens_and_symbols_df is None:
+            tokens_and_symbols_df = load_tokens_and_symbols_from_csv()
+        
+        if tokens_and_symbols_df.empty:
+            logger.error("CSV data not loaded")
+            return []
+        
+        # Filter to specified exchange or use default
+        target_exchange = exchange or config.exchange
+        if target_exchange == "ALL":
+            # Search across all exchanges
+            df = tokens_and_symbols_df.copy()
         else:
-            error_msg = search_resp.get("message", "Unknown error") if isinstance(search_resp, dict) else "Invalid response"
-            logger.warning(f"Symbol search failed for '{search_text}': {error_msg}")
-    
+            # Filter to specified exchange
+            df = tokens_and_symbols_df[tokens_and_symbols_df['exch_seg'] == target_exchange].copy()
+        
+        # Search by symbol and name with exact and partial matching
+        exact_symbol_matches = df[df['symbol'].str.upper() == search_text]
+        exact_name_matches = df[df['name'].str.upper() == search_text]
+        
+        partial_symbol_matches = df[df['symbol'].str.upper().str.contains(search_text)]
+        partial_name_matches = df[df['name'].str.upper().str.contains(search_text)]
+        
+        # Combine matches, prioritizing exact matches first
+        all_matches = pd.concat([
+            exact_symbol_matches,
+            exact_name_matches,
+            partial_symbol_matches,
+            partial_name_matches
+        ]).drop_duplicates()
+        
+        # Convert to list of dictionaries
+        matches = [row.to_dict() for _, row in all_matches.iterrows()]
+        
+        if matches:
+            logger.info(f"Found {len(matches)} matches for '{search_text}' in CSV")
+            
+        return matches
     except Exception as e:
-        logger.error(f"Error searching for '{search_text}': {e}")
-    
-    # If all attempts failed
-    logger.warning(f"All search attempts failed for '{search_text}'")
-    return []
+        logger.error(f"Error searching for '{search_text}' in CSV: {e}")
+        return []
 
-# Function to fetch data in bulk (up to 50 symbols at once)
+# ============ Data Fetching and Cleanup Functions ============
 def fetch_bulk_stock_data(symbols):
     """
     Fetch data for multiple stocks using the ltpData method.
@@ -4615,16 +4895,8 @@ def fetch_data_periodically():
     data_thread_started = True
     logger.info("Data fetching thread started")
     
-    # Load script master data file at startup
-    load_script_master()
-    
-    # Initialize with default stocks
-    for stock in DEFAULT_STOCKS:
-        add_stock(stock["symbol"], stock["token"], stock["exchange"], stock["type"])
-        
-        # For NIFTY and BANKNIFTY, load historical data from CSV files
-        if stock["symbol"] in ["NIFTY", "BANKNIFTY"]:
-            load_historical_data(stock["symbol"])
+    # Initialize with default stocks (using CSV data)
+    initialize_from_csv()
     
     # Mark dashboard as initialized
     dashboard_initialized = True
@@ -4659,7 +4931,7 @@ def fetch_data_periodically():
             
             # Try to use broker data if connected
             if broker_connected:
-               # Refresh session if needed
+                # Refresh session if needed
                 refresh_session_if_needed()
                 
                 # Update all stocks using bulk API
@@ -4705,170 +4977,6 @@ def fetch_data_periodically():
         except Exception as e:
             logger.error(f"Error in fetch_data_periodically: {e}", exc_info=True)
             time.sleep(1)
-
-def fetch_bulk_data():
-    """
-    Fetch all stock and option data in bulk using tokens from CSV
-    """
-    global smart_api, broker_connected, stocks_data, options_data
-    
-    if not broker_connected or smart_api is None:
-        logger.warning("Cannot fetch bulk data: Not connected to broker")
-        return {}
-    
-    # Refresh session if needed
-    refresh_session_if_needed()
-    
-    # Collect all symbols and tokens to fetch
-    symbols_to_fetch = {}  # {exchange: {symbol: token}}
-    
-    # Add stocks
-    for symbol, stock_info in stocks_data.items():
-        exchange = stock_info.get("exchange", "NSE")
-        token = stock_info.get("token")
-        
-        if token and symbol:
-            if exchange not in symbols_to_fetch:
-                symbols_to_fetch[exchange] = {}
-            symbols_to_fetch[exchange][symbol] = token
-    
-    # Add options
-    for option_key, option_info in options_data.items():
-        # Skip options with fallback tokens
-        if option_info.get("is_fallback", False):
-            continue
-            
-        exchange = option_info.get("exchange", "NFO")
-        symbol = option_info.get("symbol")
-        token = option_info.get("token")
-        
-        if token and symbol:
-            if exchange not in symbols_to_fetch:
-                symbols_to_fetch[exchange] = {}
-            symbols_to_fetch[exchange][symbol] = token
-    
-    # Fetch data in batches by exchange
-    all_results = {}
-    
-    for exchange, symbols in symbols_to_fetch.items():
-        # Process in batches of BULK_FETCH_SIZE
-        symbol_items = list(symbols.items())
-        
-        for i in range(0, len(symbol_items), BULK_FETCH_SIZE):
-            batch = symbol_items[i:i+BULK_FETCH_SIZE]
-            batch_symbols = {s: t for s, t in batch}
-            
-            # Make bulk requests
-            try:
-                logger.info(f"Making bulk LTP request for {len(batch_symbols)} symbols on {exchange}")
-                ltp_response = {}
-                
-                for symbol, token in batch_symbols.items():
-                    try:
-                        single_resp = smart_api.ltpData(exchange, symbol, token)
-                        if isinstance(single_resp, dict) and single_resp.get("status"):
-                            ltp_response[symbol] = single_resp.get("data", {})
-                        
-                        # Small delay to avoid rate limiting
-                        time.sleep(0.1)
-                    except Exception as e:
-                        logger.error(f"Error fetching data for {symbol}: {e}")
-                
-                # Process the response
-                for symbol, data in ltp_response.items():
-                    all_results[f"{exchange}:{symbol}"] = {
-                        "exchange": exchange,
-                        "symbol": symbol,
-                        "ltp": float(data.get("ltp", 0) or 0),
-                        "open": float(data.get("open", 0) or 0),
-                        "high": float(data.get("high", 0) or 0),
-                        "low": float(data.get("low", 0) or 0),
-                        "previous": float(data.get("previous", 0) or 0),
-                        "volume": data.get("tradingSymbol", 0),
-                        "timestamp": datetime.now()
-                    }
-            except Exception as e:
-                logger.error(f"Error in bulk fetch for {exchange}: {e}")
-            
-            # Small delay between batches
-            time.sleep(0.2)
-    
-    return all_results
-
-# Update option selection to use the new CSV-based functions
-def update_option_selection(force_update=False):
-    """
-    Update option selection for all stocks based on current prices
-    """
-    global stocks_data, last_option_selection_update
-    
-    current_time = datetime.now()
-    
-    # Only update periodically unless forced
-    if not force_update and (current_time - last_option_selection_update).total_seconds() < OPTION_AUTO_SELECT_INTERVAL:
-        return
-    
-    logger.info("Updating option selection based on current stock prices")
-    
-    # Process each stock
-    for symbol, stock_info in stocks_data.items():
-        current_price = stock_info.get("ltp")
-        
-        if current_price is None or current_price <= 0:
-            logger.warning(f"Skipping option selection for {symbol}: Invalid price {current_price}")
-            continue
-            
-        # Check if we need new options
-        need_new_options = False
-        
-        # Check current primary options
-        primary_ce = stock_info.get("primary_ce")
-        primary_pe = stock_info.get("primary_pe")
-        
-        if primary_ce is None or primary_pe is None:
-            need_new_options = True
-            logger.info(f"Missing primary options for {symbol}")
-        elif primary_ce in options_data and primary_pe in options_data:
-            # Check if current options are still ATM
-            ce_strike = float(options_data[primary_ce].get("strike", 0))
-            pe_strike = float(options_data[primary_pe].get("strike", 0))
-            
-            # Calculate appropriate strike interval
-            if current_price < 100:
-                strike_interval = 5
-            elif current_price < 1000:
-                strike_interval = 10
-            elif current_price < 10000:
-                strike_interval = 50
-            else:
-                strike_interval = 100
-            
-            # Check if strikes are still close to current price
-            ce_distance = abs(current_price - ce_strike)
-            pe_distance = abs(current_price - pe_strike)
-            
-            if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
-                need_new_options = True
-                logger.info(f"Options for {symbol} too far from current price (CE distance: {ce_distance:.2f}, PE distance: {pe_distance:.2f})")
-            
-            # Check if options are using fallback data
-            elif any(options_data[opt].get("using_fallback", False) for opt in [primary_ce, primary_pe]):
-                need_new_options = True
-                logger.info(f"Options for {symbol} are using fallback data, finding better options")
-        else:
-            need_new_options = True
-            logger.info(f"Options data missing for {symbol}")
-        
-        # Get new options if needed
-        if need_new_options:
-            find_and_add_atm_options(symbol, current_price)
-    
-    # Update timestamp
-    last_option_selection_update = current_time
-
-
-# ============ Dashboard UI ============
-# Define a modern color scheme for the dashboard
 # ============ Dashboard UI ============
 # Define a modern color scheme for the dashboard
 COLOR_SCHEME = {
@@ -4886,92 +4994,6 @@ COLOR_SCHEME = {
     "dark": "#212529",
     "border": "#495057"
 }
-
-# Define custom CSS for smooth transitions and animations
-# Find the app_css definition in your code and replace it with this enhanced version:
-app_css = '''
-/* Base transitions */
-.dynamic-update {
-    transition: all 0.3s ease-in-out !important;
-}
-
-/* Price updates */
-.price-element {
-    transition: color 0.3s ease, background-color 0.3s ease !important;
-}
-
-/* Badge transitions */
-.badge-transition {
-    transition: background-color 0.3s ease, color 0.3s ease !important;
-}
-
-/* Hardware acceleration to prevent flickering */
-.no-flicker {
-    transform: translateZ(0);
-    backface-visibility: hidden;
-}
-
-/* Smooth progress bar updates */
-.progress-bar {
-    transition: width 0.3s ease-in-out !important;
-}
-
-/* Value updates */
-.value-update {
-    transition: opacity 0.3s, transform 0.3s, color 0.3s;
-}
-
-/* Card updates */
-.card-update {
-    transition: border-color 0.3s ease-in-out;
-}
-
-/* Remove blinking animations */
-.highlight-positive, .highlight-negative {
-    animation: none !important;
-    transition: background-color 0.3s ease-in-out;
-}
-
-/* Color transitions */
-.color-transition {
-    transition: color 0.3s ease-in-out;
-}
-'''
-
-# Initialize Dash app with custom settings and CSS
-app = dash.Dash(
-    __name__,  # Using __name__ with double underscores
-    external_stylesheets=[dbc.themes.DARKLY], 
-    suppress_callback_exceptions=True,
-    meta_tags=[
-        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
-    ]
-)
-app.title = "Options Trading Dashboard"
-
-# Override the default index string to include custom CSS
-app.index_string = '''
-<!DOCTYPE html>
-<html>
-    <head>
-        {%metas%}
-        <title>{%title%}</title>
-        {%favicon%}
-        {%css%}
-        <style>
-            ''' + app_css + '''
-        </style>
-    </head>
-    <body>
-        {%app_entry%}
-        <footer>
-            {%config%}
-            {%scripts%}
-            {%renderer%}
-        </footer>
-    </body>
-</html>
-'''
 
 # Custom CSS for improved UI
 custom_css = {
@@ -5217,6 +5239,7 @@ def create_stock_option_card(symbol):
     style=custom_css["card"],
     className="mb-3 border-info"
     )
+
 def create_strategy_settings_card():
     return dbc.Card([
         dbc.CardHeader(html.H4("Strategy Settings", className="text-warning mb-0"), 
@@ -5527,81 +5550,7 @@ def create_layout():
 # Main application layout with improved UI
 app.layout = create_layout()
 
-
 # ============ Dashboard Callbacks ============
-def update_value_store():
-    """Update the central value store with current data"""
-    global value_store
-    
-    # Update stock values
-    for symbol, stock_info in stocks_data.items():
-        if symbol not in value_store['stocks']:
-            value_store['stocks'][symbol] = {}
-        
-        value_store['stocks'][symbol].update({
-            'price': stock_info.get('ltp', 0),
-            'change': stock_info.get('change_percent', 0),
-            'pcr': pcr_data.get(symbol, {}).get('current', 1.0),
-            'sentiment': market_sentiment.get(symbol, 'NEUTRAL'),
-            'last_update': stock_info.get('last_updated')
-        })
-    
-    # Update option values
-    for option_key, option_info in options_data.items():
-        if option_key not in value_store['options']:
-            value_store['options'][option_key] = {}
-            
-        value_store['options'][option_key].update({
-            'price': option_info.get('ltp', 0),
-            'signal': option_info.get('signal', 0),
-            'strength': option_info.get('strength', 0),
-            'trend': option_info.get('trend', 'NEUTRAL')
-        })
-    
-    # Update performance values
-    value_store['performance'].update({
-        'total_pnl': trading_state.total_pnl,
-        'daily_pnl': trading_state.daily_pnl,
-        'win_rate': (trading_state.wins / (trading_state.wins + trading_state.losses) * 100) if (trading_state.wins + trading_state.losses) > 0 else 0,
-        'trades_today': trading_state.trades_today
-    })
-
-def throttle_ui_updates(current_data, previous_data, key, throttle_fields=None):
-    """
-    Throttle UI updates to reduce blinking by only updating changed values
-    
-    Args:
-        current_data (dict): Current data
-        previous_data (dict): Previous data
-        key (str): Key to check
-        throttle_fields (list): List of fields to throttle updates for
-        
-    Returns:
-        dict: Throttled data
-    """
-    if throttle_fields is None:
-        throttle_fields = ['price', 'ltp', 'change']
-        
-    if key not in current_data or key not in previous_data:
-        return current_data[key] if key in current_data else {}
-    
-    # Start with current data
-    result = current_data[key].copy()
-    
-    # Check each throttle field
-    for field in throttle_fields:
-        if field in current_data[key] and field in previous_data[key]:
-            current_value = current_data[key][field]
-            previous_value = previous_data[key][field]
-            
-            # Only update if significant change (more than 0.1%)
-            if isinstance(current_value, (int, float)) and isinstance(previous_value, (int, float)):
-                # For prices, only update if change is greater than minimum threshold
-                if abs(current_value - previous_value) < (previous_value * 0.001):
-                    result[field] = previous_value
-    
-    return result
-
 # Update UI Data Store to reduce blinking
 @app.callback(
     Output('ui-data-store', 'data'),
@@ -5862,1392 +5811,6 @@ def update_ui_data_store(n_intervals, previous_data):
                 }
     
     return result
-    
-    
-@app.callback(
-    [Output("broker-status", "children"),
-     Output("broker-status", "className"),
-     Output("last-connection-time", "children"),
-     Output("connection-details", "children")],
-    [Input('ui-data-store', 'data')]
-)
-def update_connection_status(data):
-    if not data or 'connection' not in data:
-        return "Unknown", "badge bg-secondary", "Never", "No connection data"
-    
-    connection_data = data['connection']
-    
-    # Broker connection status
-    if connection_data['status'] == 'connected':
-        broker_status = "Connected"
-        broker_class = "badge bg-success"
-    else:
-        if "blocked" in connection_data.get('message', '').lower():
-            broker_status = "Blocked"
-            broker_class = "badge bg-danger"
-        else:
-            broker_status = "Disconnected"
-            broker_class = "badge bg-warning text-dark"
-    
-    # Connection details
-    if connection_data['status'] == 'connected':
-        details = ["Connected to broker API", html.Br(), "Using real-time market data"]
-    else:
-        details = []
-        if connection_data.get('message'):
-            details.extend([
-                html.Span("Error: ", className="text-danger"),
-                html.Span(connection_data['message']),
-                html.Br()
-            ])
-        
-        if broker_connection_retry_time:
-            time_diff = (broker_connection_retry_time - datetime.now()).total_seconds()
-            if time_diff > 0:
-                minutes = int(time_diff // 60)
-                seconds = int(time_diff % 60)
-                details.extend([
-                    html.Span("Next retry in: ", className="text-muted"),
-                    html.Span(f"{minutes}m {seconds}s")
-                ])
-    
-    return broker_status, broker_class, connection_data['last_connection'], details
-
-# News display callback
-@app.callback(
-    [Output("news-container", "children"),
-     Output("news-last-updated", "children")],
-    [Input('medium-interval', 'n_intervals'),
-     Input('ui-data-store', 'data')]
-)
-def update_news_display(n_intervals, data):
-    if not data or 'news' not in data:
-        return "No market news available.", "Not updated"
-    
-    news_data = data['news']
-    news_items = news_data.get('items', [])
-    last_updated = news_data.get('last_updated', "Not updated")
-    
-    if not news_items:
-        return "No market news available.", last_updated
-    
-    # Create news item cards
-    news_cards = []
-    
-    for item in news_items[:5]:  # Display only the 5 most recent items
-        title = item.get('title', 'No title')
-        source = item.get('source', 'Unknown')
-        timestamp = item.get('timestamp')
-        
-        # Format timestamp
-        time_str = timestamp.strftime("%H:%M:%S") if isinstance(timestamp, datetime) else "Unknown time"
-        
-        # Create card
-        card = dbc.Card([
-            dbc.CardBody([
-                html.H5(title, className="mb-1"),
-                html.Div([
-                    html.Span(source, className="text-muted me-2"),
-                    html.Span(time_str, className="text-muted small")
-                ], className="d-flex justify-content-between")
-            ], className="p-3")
-        ], className="mb-2", style=custom_css["card_alt"])
-        
-        news_cards.append(card)
-    
-    # Add news trading signals if available
-    signals = news_data.get('signals', [])
-    
-    if signals:
-        signals_section = html.Div([
-            html.H5("Trading Signals from News", className="mt-3 mb-2 text-warning"),
-            html.Div([
-                html.Div([
-                    html.Strong(f"{s['stock']}: ", className="me-1"),
-                    html.Span(f"{s['action']} - {s['latest_news'][:50]}...", 
-                             className="text-success" if "BUY_CE" in s['action'] else "text-danger")
-                ], className="mb-1") for s in signals[:3]  # Show only the top 3 signals
-            ])
-        ])
-        
-        news_cards.append(signals_section)
-    
-    return news_cards, last_updated
-
-# Retry connection button callback
-@app.callback(
-    [Output("retry-connection-button", "disabled"),
-     Output("notification-toast", "is_open", allow_duplicate=True),
-     Output("notification-toast", "header", allow_duplicate=True),
-     Output("notification-toast", "children", allow_duplicate=True),
-     Output("notification-toast", "icon", allow_duplicate=True)],
-    [Input("retry-connection-button", "n_clicks")],
-    prevent_initial_call=True
-)
-def handle_retry_connection(n_clicks):
-    if not n_clicks:
-        return False, False, "", "", "primary"
-    
-    # Reset retry time to force immediate connection attempt
-    global broker_connection_retry_time
-    broker_connection_retry_time = None
-    
-    # Attempt to connect
-    success = connect_to_broker()
-    
-    if success:
-        return False, True, "Connection Success", "Successfully connected to broker", "success"
-    else:
-        return False, True, "Connection Failed", broker_error_message or "Failed to connect to broker", "danger"
-
-# Dynamic stock cards container callback
-@app.callback(
-    Output("stock-cards-container", "children"),
-    [Input('medium-interval', 'n_intervals'),
-     Input("add-stock-button", "n_clicks"),
-     Input({"type": "remove-stock-btn", "index": ALL}, "n_clicks")]
-)
-def update_stock_cards(n_intervals, add_clicks, remove_clicks):
-    # Create stock cards dynamically based on stocks_data
-    stock_cards = []
-    
-    # Create a row of 2 cards per row
-    symbols = list(stocks_data.keys())
-    
-    # Always ensure at least one placeholder row if all stocks are removed
-    if not symbols:
-        return [html.Div("No stocks added. Use the Add Stock form above to add stocks or indices.", 
-                       className="text-center text-muted my-5")]
-    
-    # Ensure we have an even number of cards by adding a placeholder if needed
-    if len(symbols) % 2 == 1:
-        symbols_to_display = symbols.copy()
-    else:
-        symbols_to_display = symbols
-    
-    # Create rows of cards
-    for i in range(0, len(symbols_to_display), 2):
-        row_cards = []
-        for j in range(2):
-            idx = i + j
-            if idx < len(symbols):
-                symbol = symbols[idx]
-                row_cards.append(dbc.Col([create_stock_option_card(symbol)], width=6))
-            else:
-                # Add an empty placeholder card when needed to maintain layout
-                row_cards.append(dbc.Col([
-                    dbc.Card([
-                        dbc.CardHeader([
-                            html.H4("Add a Stock", className="text-center text-muted mb-0")
-                        ], style=custom_css["header"]),
-                        dbc.CardBody([
-                            html.Div("Use the Add Stock form above to add more stocks or indices.", 
-                                   className="text-center text-muted")
-                        ], className="px-4 py-3")
-                    ], 
-                    style=dict(custom_css["card"], **{"opacity": "0.5"}),
-                    className="mb-3 border-secondary")
-                ], width=6))
-        
-        # Add this row to the container
-        stock_cards.append(dbc.Row(row_cards))
-    
-    return stock_cards
-
-# Add Stock Callback
-@app.callback(
-    [Output("add-stock-message", "children"),
-     Output("add-stock-message", "className"),
-     Output("add-stock-symbol", "value")],
-    [Input("add-stock-button", "n_clicks")],
-    [State("add-stock-symbol", "value"),
-     State("add-stock-type", "value")],
-    prevent_initial_call=True
-)
-def add_stock_callback(n_clicks, symbol, stock_type):
-    """
-    Callback for adding a stock from CSV and finding its options
-    """
-    if not symbol:
-        return "Please enter a symbol", "text-danger mt-2", ""
-    
-    # Standardize symbol to uppercase
-    symbol = symbol.upper()
-    
-    # Check if stock already exists
-    if symbol in stocks_data:
-        return f"{symbol} is already being tracked", "text-warning mt-2", ""
-    
-    # Search for the stock in CSV
-    stock_data = search_stock_in_csv(symbol)
-    
-    if not stock_data:
-        return f"Could not find {symbol} in the CSV database", "text-danger mt-2", symbol
-    
-    # Add stock from CSV data
-    success = add_stock_from_csv_data(stock_data)
-    
-    if success:
-        # Fetch initial data to get the price
-        if broker_connected:
-            fetch_stock_data(symbol)
-        
-        # Find and add options if we have a price
-        current_price = stocks_data[symbol].get("ltp")
-        if current_price:
-            # Find ATM options
-            options_found = find_and_add_atm_options(symbol, current_price)
-            if options_found.get("CE") or options_found.get("PE"):
-                return f"Added {symbol} with options successfully", "text-success mt-2", ""
-            else:
-                return f"Added {symbol} (no options found)", "text-success mt-2", ""
-        else:
-            return f"Added {symbol} (waiting for price data)", "text-success mt-2", ""
-    else:
-        return f"Failed to add {symbol}", "text-danger mt-2", symbol
-
-# Remove Stock Callback
-@app.callback(
-    [Output("notification-toast", "is_open", allow_duplicate=True),
-     Output("notification-toast", "header", allow_duplicate=True),
-     Output("notification-toast", "children", allow_duplicate=True),
-     Output("notification-toast", "icon", allow_duplicate=True)],
-    [Input({"type": "remove-stock-btn", "index": ALL}, "n_clicks")],
-    [State({"type": "remove-stock-btn", "index": ALL}, "id")],
-    prevent_initial_call=True
-)
-def remove_stock_callback(n_clicks, ids):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return False, "", "", "primary"
-    
-    # Find which button was clicked
-    btn_idx = -1
-    for i, clicks in enumerate(n_clicks):
-        if clicks is not None and clicks > 0:
-            btn_idx = i
-            break
-    
-    if btn_idx == -1:
-        return False, "", "", "primary"
-            
-    try:
-        # Get the symbol to remove
-        symbol = ids[btn_idx]["index"]
-        
-        # Remove the stock
-        success = remove_stock(symbol)
-        
-        if success:
-            # Force a refresh of the interval component to update the UI
-            return True, "Stock Removed", f"Successfully removed {symbol}", "success"
-        else:
-            return True, "Error", f"Failed to remove {symbol}", "danger"
-    except Exception as e:
-        logger.error(f"Error removing stock: {str(e)}")
-        return True, "Error", f"Failed to remove stock: {str(e)}", "danger"
-
-# Strategy Settings Callback
-@app.callback(
-    [Output("strategy-status", "children"),
-     Output("scalp-progress", "value"),
-     Output("swing-progress", "value"),
-     Output("momentum-progress", "value"),
-     Output("news-progress", "value")],
-    [Input("scalp-strategy-toggle", "value"),
-     Input("swing-strategy-toggle", "value"),
-     Input("momentum-strategy-toggle", "value"),
-     Input("news-strategy-toggle", "value"),
-     Input('ui-data-store', 'data')]
-)
-def update_strategy_settings(scalp_enabled, swing_enabled, momentum_enabled, news_enabled, data):
-    global strategy_settings
-    strategy_settings["SCALP_ENABLED"] = scalp_enabled
-    strategy_settings["SWING_ENABLED"] = swing_enabled
-    strategy_settings["MOMENTUM_ENABLED"] = momentum_enabled
-    strategy_settings["NEWS_ENABLED"] = news_enabled
-    
-    enabled_strategies = []
-    if scalp_enabled:
-        enabled_strategies.append("SCALP")
-    if swing_enabled:
-        enabled_strategies.append("SWING")
-    if momentum_enabled:
-        enabled_strategies.append("MOMENTUM")
-    if news_enabled:
-        enabled_strategies.append("NEWS")
-    
-    # Calculate strategy execution percentages
-    scalp_progress = 0
-    swing_progress = 0
-    momentum_progress = 0
-    news_progress = 0
-    
-    if data and 'predicted_strategies' in data:
-        strategy_counts = {"SCALP": 0, "SWING": 0, "MOMENTUM": 0, "NEWS": 0, "NONE": 0}
-        total_stocks = 0
-        
-        # Count strategy predictions
-        for symbol, strategy_data in data['predicted_strategies'].items():
-            if strategy_data and 'strategy' in strategy_data:
-                strategy = strategy_data['strategy']
-                if strategy in strategy_counts:
-                    strategy_counts[strategy] += 1
-                total_stocks += 1
-        
-        # Calculate percentages
-        if total_stocks > 0:
-            scalp_progress = (strategy_counts["SCALP"] / total_stocks) * 100
-            swing_progress = (strategy_counts["SWING"] / total_stocks) * 100
-            momentum_progress = (strategy_counts["MOMENTUM"] / total_stocks) * 100
-            news_progress = (strategy_counts["NEWS"] / total_stocks) * 100
-    
-    if enabled_strategies:
-        return [f"Enabled: {', '.join(enabled_strategies)}"], scalp_progress, swing_progress, momentum_progress, news_progress
-    else:
-        return ["No trading strategies enabled - Trading paused"], 0, 0, 0, 0
-
-@app.callback(
-    [
-        Output({"type": "data-source-badge", "index": ALL}, "children"),
-        Output({"type": "data-source-badge", "index": ALL}, "className"),
-        Output({"type": "stock-price", "index": ALL}, "children"),
-        Output({"type": "stock-price", "index": ALL}, "className"),
-        Output({"type": "stock-change", "index": ALL}, "children"),
-        Output({"type": "stock-change", "index": ALL}, "className"),
-        Output({"type": "stock-ohlc", "index": ALL}, "children"),
-        Output({"type": "stock-pcr", "index": ALL}, "children"),
-        Output({"type": "pcr-strength", "index": ALL}, "children"),
-        Output({"type": "stock-sentiment", "index": ALL}, "children"),
-        Output({"type": "stock-sentiment", "index": ALL}, "className"),
-        Output({"type": "stock-sr-levels", "index": ALL}, "children"),
-        Output({"type": "stock-last-update", "index": ALL}, "children"),
-        Output({"type": "strategy-prediction", "index": ALL}, "children")
-    ],
-    [Input('ui-data-store', 'data')],
-    [State({"type": "data-source-badge", "index": ALL}, "id")]
-)
-def update_stocks_display(data, badge_ids):
-    """Update stock display using values from store"""
-    if not badge_ids:
-        return [], [], [], [], [], [], [], [], [], [], [], [], [], []
-        
-    outputs = []
-    for symbol in stocks_data:
-        stored_data = data['stocks'].get(symbol, {})
-        price = stored_data.get('price', 'N/A')
-        change = stored_data.get('change', 0)
-        
-        # Format price and change without causing UI flicker
-        outputs.append({
-            'price': f"₹{price:,.2f}" if isinstance(price, (int, float)) else "N/A",
-            'price_class': "fs-4 text-light dynamic-update price-element",
-            'change': f"{change:+.2f}%" if isinstance(change, (int, float)) else "N/A",
-            'change_class': "text-success" if change > 0 else "text-danger" if change < 0 else "text-light"
-        })
-    
-    # Create return lists for each output
-    data_sources = ["Real-time" for _ in badge_ids]
-    data_source_classes = ["badge bg-success" for _ in badge_ids]
-    prices = [o['price'] for o in outputs]
-    price_classes = [o['price_class'] for o in outputs]
-    changes = [o['change'] for o in outputs]
-    change_classes = [o['change_class'] for o in outputs]
-    ohlc = ["N/A" for _ in badge_ids]
-    pcr = ["N/A" for _ in badge_ids]
-    pcr_strength = ["" for _ in badge_ids]
-    sentiments = ["NEUTRAL" for _ in badge_ids]
-    sentiment_classes = ["badge bg-secondary" for _ in badge_ids]
-    sr_levels = ["" for _ in badge_ids]
-    last_updates = ["" for _ in badge_ids]
-    predictions = ["" for _ in badge_ids]
-    
-    return (data_sources, data_source_classes, prices, price_classes, 
-            changes, change_classes, ohlc, pcr, pcr_strength, sentiments, 
-            sentiment_classes, sr_levels, last_updates, predictions)
-    if not data:
-        # Return placeholders if no data
-        empty_result = [
-            ["Live"] * len(badge_ids),  # data source badges
-            ["badge bg-success ms-2 small"] * len(badge_ids),  # source badge classes
-            ["Loading..."] * len(badge_ids),  # price outputs
-            ["fs-4 text-light smooth-transition price-change"] * len(badge_ids),  # price class outputs
-            ["0.00%"] * len(badge_ids),  # change text outputs
-            ["text-secondary smooth-transition price-change"] * len(badge_ids),  # change class outputs
-            ["OHLC data not available"] * len(badge_ids),  # ohlc outputs
-            ["N/A"] * len(badge_ids),  # pcr outputs
-            [""] * len(badge_ids),  # pcr strength outputs
-            ["NEUTRAL"] * len(badge_ids),  # sentiment text outputs
-            ["badge bg-secondary smooth-transition"] * len(badge_ids),  # sentiment class outputs
-            ["S/R not available"] * len(badge_ids),  # sr levels outputs
-            ["Not yet updated"] * len(badge_ids),  # last update outputs
-            [""] * len(badge_ids)  # strategy predictions
-        ]
-        return empty_result
-
-    symbols = [id_dict["index"] for id_dict in badge_ids]
-    
-    source_badges = []
-    source_classes = []
-    price_outputs = []
-    price_classes = []
-    change_text_outputs = []
-    change_class_outputs = []
-    ohlc_outputs = []
-    pcr_outputs = []
-    pcr_strength_outputs = []
-    sentiment_text_outputs = []
-    sentiment_class_outputs = []
-    sr_levels_outputs = []
-    last_update_outputs = []
-    strategy_prediction_outputs = []
-    
-    for symbol in symbols:
-        if symbol in stocks_data:
-            stock_info = stocks_data[symbol]
-            stock_data = data['stocks'].get(symbol, {})
-            
-            # Set data source badge
-            source_badges.append("Live" if broker_connected else "Offline")
-            source_classes.append("badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition")
-            
-            # Format price with transition classes
-            ltp = stock_data.get('price')
-            if ltp is not None:
-                price_text = f"₹{ltp:.2f}"
-                price_outputs.append(price_text)
-                
-                # Determine highlight class for price changes
-                base_class = "fs-4 text-light smooth-transition price-change"
-                if stock_data.get('has_changed', False):
-                    if stock_data.get('change_direction') == 'up':
-                        highlight_class = f"{base_class} highlight-positive"
-                    elif stock_data.get('change_direction') == 'down':
-                        highlight_class = f"{base_class} highlight-negative"
-                    else:
-                        highlight_class = base_class
-                else:
-                    highlight_class = base_class
-                
-                price_classes.append(highlight_class)
-            else:
-                price_outputs.append("Waiting for data...")
-                price_classes.append("fs-4 text-light smooth-transition")
-            
-            # Format change percentage with transitions
-            change_pct = stock_data.get("change", 0)
-            base_change_class = "smooth-transition price-change"
-            
-            if change_pct > 0:
-                change_text_outputs.append(f"+{change_pct:.2f}%")
-                change_class_outputs.append(f"text-success {base_change_class}")
-            elif change_pct < 0:
-                change_text_outputs.append(f"{change_pct:.2f}%")
-                change_class_outputs.append(f"text-danger {base_change_class}")
-            else:
-                change_text_outputs.append("0.00%")
-                change_class_outputs.append(f"text-warning {base_change_class}")
-            
-            # Format OHLC with smooth transitions
-            ohlc_data = stock_data.get('ohlc', {})
-            if all(x is not None for x in [
-                ohlc_data.get('open'), 
-                ohlc_data.get('high'), 
-                ohlc_data.get('low'), 
-                ohlc_data.get('previous')
-            ]):
-                ohlc_text = f"O: {ohlc_data['open']:.2f} H: {ohlc_data['high']:.2f} L: {ohlc_data['low']:.2f} P: {ohlc_data['previous']:.2f}"
-                ohlc_outputs.append(ohlc_text)
-            else:
-                ohlc_outputs.append("OHLC data not available")
-            
-            # Format PCR with smooth transitions
-            pcr_value = data['pcr'].get(symbol, {}).get('current', 1.0)
-            pcr_text = f"{pcr_value:.2f}"
-            pcr_outputs.append(pcr_text)
-            
-            # Format PCR strength indicator with transitions
-            pcr_strength = data['pcr'].get(symbol, {}).get('strength', 0)
-            if pcr_strength > 0.5:
-                pcr_strength_text = html.Span("↑", className="text-success fw-bold smooth-transition", title="Strong Bullish Signal")
-            elif pcr_strength > 0.2:
-                pcr_strength_text = html.Span("↗", className="text-success smooth-transition", title="Bullish Signal")
-            elif pcr_strength < -0.5:
-                pcr_strength_text = html.Span("↓", className="text-danger fw-bold smooth-transition", title="Strong Bearish Signal")
-            elif pcr_strength < -0.2:
-                pcr_strength_text = html.Span("↘", className="text-danger smooth-transition", title="Bearish Signal")
-            else:
-                pcr_strength_text = html.Span("→", className="text-secondary smooth-transition", title="Neutral Signal")
-            
-            pcr_strength_outputs.append(pcr_strength_text)
-            
-            # Format sentiment with smooth transitions
-            sentiment = data['sentiment'].get(symbol, "NEUTRAL")
-            sentiment_text_outputs.append(sentiment)
-            
-            base_sentiment_class = "badge smooth-transition"
-            if "BULLISH" in sentiment:
-                if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success")
-                else:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success bg-opacity-75")
-            elif "BEARISH" in sentiment:
-                if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger")
-                else:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger bg-opacity-75")
-            else:
-                sentiment_class_outputs.append(f"{base_sentiment_class} bg-secondary")
-            
-            # Get support/resistance levels
-            support_levels = stock_info.get("support_levels", [])
-            resistance_levels = stock_info.get("resistance_levels", [])
-            
-            # Format support/resistance levels
-            if support_levels and resistance_levels:
-                # Take only the top 2 levels for cleaner display
-                s_levels = [f"{s:.2f}" for s in support_levels[:2]]
-                r_levels = [f"{r:.2f}" for r in resistance_levels[:2]]
-                sr_text = f"S: {', '.join(s_levels)} | R: {', '.join(r_levels)}"
-                sr_levels_outputs.append(sr_text)
-            else:
-                sr_levels_outputs.append("S/R not available")
-            
-            # Format last update time
-            last_update_outputs.append(f"Updated: {stock_data.get('last_updated', 'N/A')}")
-            
-            # Format strategy prediction
-            predicted_strategy = stock_info.get("predicted_strategy")
-            strategy_confidence = stock_info.get("strategy_confidence", 0)
-            
-            if predicted_strategy and strategy_confidence > 0.5:
-                strategy_class = "text-success font-weight-bold" if strategy_confidence > 0.7 else "text-info"
-                strategy_pred_text = html.Div([
-                    html.Span("Predicted strategy: ", className="text-muted"),
-                    html.Span(f"{predicted_strategy} ({strategy_confidence:.1%})", className=f"{strategy_class} smooth-transition")
-                ])
-                strategy_prediction_outputs.append(strategy_pred_text)
-            else:
-                strategy_prediction_outputs.append("")
-                
-        else:
-            # Default values if stock not found
-            source_badges.append("Live" if broker_connected else "Offline")
-            source_classes.append("badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition")
-            price_outputs.append("N/A")
-            price_classes.append("fs-4 text-light smooth-transition")
-            change_text_outputs.append("0.00%")
-            change_class_outputs.append("text-warning smooth-transition price-change")
-            ohlc_outputs.append("OHLC data not available")
-            pcr_outputs.append("N/A")
-            pcr_strength_outputs.append("")
-            sentiment_text_outputs.append("NEUTRAL")
-            sentiment_class_outputs.append("badge bg-secondary smooth-transition")
-            sr_levels_outputs.append("S/R not available")
-            last_update_outputs.append("Not found")
-            strategy_prediction_outputs.append("")
-    
-    return [
-        source_badges,
-        source_classes,
-        price_outputs,
-        price_classes,
-        change_text_outputs,
-        change_class_outputs,
-        ohlc_outputs,
-        pcr_outputs,
-        pcr_strength_outputs,
-        sentiment_text_outputs,
-        sentiment_class_outputs,
-        sr_levels_outputs,
-        last_update_outputs,
-        strategy_prediction_outputs
-    ]
-@app.callback(
-    [
-        Output("notification-toast", "is_open", allow_duplicate=True),
-        Output("notification-toast", "header", allow_duplicate=True),
-        Output("notification-toast", "children", allow_duplicate=True),
-        Output("notification-toast", "icon", allow_duplicate=True)
-    ],
-    [Input({"type": "fetch-history-btn", "index": ALL}, "n_clicks")],
-    [State({"type": "fetch-history-btn", "index": ALL}, "id")],
-    prevent_initial_call=True
-)
-def fetch_history_button(n_clicks, ids):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return False, "", "", "primary"
-    
-    # Find which button was clicked
-    btn_idx = None
-    for i, clicks in enumerate(n_clicks):
-        if clicks is not None and clicks > 0:
-            btn_idx = i
-            break
-    
-    if btn_idx is None:
-        return False, "", "", "primary"
-            
-    try:
-        # Get the symbol to fetch history for
-        symbol = ids[btn_idx]["index"]
-        
-        # Fetch historical data with force refresh
-        success = load_historical_data(symbol, period="3mo", force_refresh=True)
-        
-        # Force recalculation of S/R levels with extra safeguards
-        if success:
-            # Directly call calculate_support_resistance
-            sr_success = calculate_support_resistance(symbol)
-            
-            # Manually trigger a refresh of the UI
-            last_data_update["stocks"][symbol] = datetime.now()
-            
-            logger.info(f"S/R recalculation after history fetch for {symbol}: {'Success' if sr_success else 'Failed'}")
-            logger.info(f"New S/R values - Support: {stocks_data[symbol].get('support_levels')}, Resistance: {stocks_data[symbol].get('resistance_levels')}")
-            
-            return True, "History Fetched", f"Successfully fetched historical data for {symbol} from Yahoo Finance", "success"
-        else:
-            return True, "Error", f"Failed to fetch historical data for {symbol}", "danger"
-    except Exception as e:
-        logger.error(f"Error fetching history: {str(e)}", exc_info=True)
-        return True, "Error", f"Failed to fetch history: {str(e)}", "danger"
-
-# Update Option Data Callback
-@app.callback(
-    [
-        Output({"type": "option-ce-strike", "index": ALL}, "children"),
-        Output({"type": "option-ce-price", "index": ALL}, "children"),
-        Output({"type": "option-ce-signal", "index": ALL}, "children"),
-        Output({"type": "option-ce-signal", "index": ALL}, "className"),
-        Output({"type": "option-ce-strength", "index": ALL}, "value"),
-        Output({"type": "option-ce-strength", "index": ALL}, "color"),
-        Output({"type": "option-ce-trade-status", "index": ALL}, "children"),
-        Output({"type": "option-pe-strike", "index": ALL}, "children"),
-        Output({"type": "option-pe-price", "index": ALL}, "children"),
-        Output({"type": "option-pe-signal", "index": ALL}, "children"),
-        Output({"type": "option-pe-signal", "index": ALL}, "className"),
-        Output({"type": "option-pe-strength", "index": ALL}, "value"),
-        Output({"type": "option-pe-strength", "index": ALL}, "color"),
-        Output({"type": "option-pe-trade-status", "index": ALL}, "children")
-    ],
-    [Input('ui-data-store', 'data')],
-    [State({"type": "option-ce-strike", "index": ALL}, "id")]
-)
-def update_options_display(data, ce_strike_ids):
-    if not data:
-        # Return placeholders if no data
-        n = len(ce_strike_ids)
-        empty = ["N/A"] * n
-        return empty, empty, ["NEUTRAL"] * n, ["badge bg-secondary"] * n, [0] * n, ["secondary"] * n, empty, empty, empty, ["NEUTRAL"] * n, ["badge bg-secondary"] * n, [0] * n, ["secondary"] * n, empty
-
-    symbols = [id_dict["index"] for id_dict in ce_strike_ids]
-    options_data_ui = data.get('options', {})
-    
-    ce_strike_outputs = []
-    ce_price_outputs = []
-    ce_signal_text_outputs = []
-    ce_signal_class_outputs = []
-    ce_strength_outputs = []
-    ce_strength_color_outputs = []
-    ce_trade_status_outputs = []
-    
-    pe_strike_outputs = []
-    pe_price_outputs = []
-    pe_signal_text_outputs = []
-    pe_signal_class_outputs = []
-    pe_strength_outputs = []
-    pe_strength_color_outputs = []
-    pe_trade_status_outputs = []
-    
-    for symbol in symbols:
-        if symbol in stocks_data:
-            stock_info = stocks_data[symbol]
-            symbol_options = options_data_ui.get(symbol, {})
-            
-            # Process CE option
-            ce_data = symbol_options.get('ce', {})
-            if ce_data:
-                # Strike
-                ce_strike_outputs.append(ce_data.get('strike', 'N/A'))
-                
-                # Price
-                ltp = ce_data.get('price')
-                ce_price_outputs.append(f"₹{ltp:.2f}" if ltp is not None else "N/A")
-                
-                # Signal
-                signal = ce_data.get('signal', 0)
-                strength = ce_data.get('strength', 0)
-                if signal > 2:
-                    signal_text = "STRONG BUY"
-                    signal_class = "badge bg-success"
-                elif signal > 1:
-                    signal_text = "BUY"
-                    signal_class = "badge bg-success"
-                elif signal > 0:
-                    signal_text = "WEAK BUY"
-                    signal_class = "badge bg-success opacity-75"
-                elif signal < -2:
-                    signal_text = "STRONG SELL"
-                    signal_class = "badge bg-danger"
-                elif signal < -1:
-                    signal_text = "SELL"
-                    signal_class = "badge bg-danger"
-                elif signal < 0:
-                    signal_text = "WEAK SELL"
-                    signal_class = "badge bg-danger opacity-75"
-                else:
-                    signal_text = "NEUTRAL"
-                    signal_class = "badge bg-secondary"
-                
-                ce_signal_text_outputs.append(signal_text)
-                ce_signal_class_outputs.append(signal_class)
-                
-                # Format strength
-                strength_val = min(abs(strength) * 10, 100)
-                
-                if signal > 0:
-                    strength_color = "success"
-                elif signal < 0:
-                    strength_color = "danger"
-                else:
-                    strength_color = "secondary"
-                
-                ce_strength_outputs.append(strength_val)
-                ce_strength_color_outputs.append(strength_color)
-                
-                # Check if we have an active trade
-                option_key = stock_info.get("primary_ce")
-                if option_key and trading_state.active_trades.get(option_key, False):
-                    entry_price = trading_state.entry_price.get(option_key)
-                    strategy = trading_state.strategy_type.get(option_key, "")
-                    if entry_price and entry_price > 0 and ltp is not None:
-                        pnl_pct = (ltp - entry_price) / entry_price * 100
-                        trade_status = html.Div([
-                            html.Span(f"{strategy} Trade: ", className="text-info small"),
-                            html.Span(f"{pnl_pct:.2f}%", 
-                                    className="text-success small" if pnl_pct >= 0 else "text-danger small")
-                        ])
-                    else:
-                        trade_status = html.Span(f"In {strategy} Trade", className="text-info small")
-                    ce_trade_status_outputs.append(trade_status)
-                else:
-                    ce_trade_status_outputs.append("")
-            else:
-                ce_strike_outputs.append("N/A")
-                ce_price_outputs.append("N/A")
-                ce_signal_text_outputs.append("NEUTRAL")
-                ce_signal_class_outputs.append("badge bg-secondary")
-                ce_strength_outputs.append(0)
-                ce_strength_color_outputs.append("secondary")
-                ce_trade_status_outputs.append("")
-            
-            # Process PE option
-            pe_data = symbol_options.get('pe', {})
-            if pe_data:
-                # Strike
-                pe_strike_outputs.append(pe_data.get('strike', 'N/A'))
-                
-                # Price
-                ltp = pe_data.get('price')
-                pe_price_outputs.append(f"₹{ltp:.2f}" if ltp is not None else "N/A")
-                
-                # Signal
-                signal = pe_data.get('signal', 0)
-                strength = pe_data.get('strength', 0)
-                if signal > 2:
-                    signal_text = "STRONG BUY"
-                    signal_class = "badge bg-success"
-                elif signal > 1:
-                    signal_text = "BUY"
-                    signal_class = "badge bg-success"
-                elif signal > 0:
-                    signal_text = "WEAK BUY"
-                    signal_class = "badge bg-success opacity-75"
-                elif signal < -2:
-                    signal_text = "STRONG SELL"
-                    signal_class = "badge bg-danger"
-                elif signal < -1:
-                    signal_text = "SELL"
-                    signal_class = "badge bg-danger"
-                elif signal < 0:
-                    signal_text = "WEAK SELL"
-                    signal_class = "badge bg-danger opacity-75"
-                else:
-                    signal_text = "NEUTRAL"
-                    signal_class = "badge bg-secondary"
-                
-                pe_signal_text_outputs.append(signal_text)
-                pe_signal_class_outputs.append(signal_class)
-                
-                # Format strength
-                strength_val = min(abs(strength) * 10, 100)
-                
-                if signal > 0:
-                    strength_color = "success"
-                elif signal < 0:
-                    strength_color = "danger"
-                else:
-                    strength_color = "secondary"
-                
-                pe_strength_outputs.append(strength_val)
-                pe_strength_color_outputs.append(strength_color)
-                
-                # Check if we have an active trade
-                option_key = stock_info.get("primary_pe")
-                if option_key and trading_state.active_trades.get(option_key, False):
-                    entry_price = trading_state.entry_price.get(option_key)
-                    strategy = trading_state.strategy_type.get(option_key, "")
-                    if entry_price and entry_price > 0 and ltp is not None:
-                        pnl_pct = (entry_price - ltp) / entry_price * 100  # Inverted for PE
-                        trade_status = html.Div([
-                            html.Span(f"{strategy} Trade: ", className="text-info small"),
-                            html.Span(f"{pnl_pct:.2f}%", 
-                                    className="text-success small" if pnl_pct >= 0 else "text-danger small")
-                        ])
-                    else:
-                        trade_status = html.Span(f"In {strategy} Trade", className="text-info small")
-                    pe_trade_status_outputs.append(trade_status)
-                else:
-                    pe_trade_status_outputs.append("")
-            else:
-                pe_strike_outputs.append("N/A")
-                pe_price_outputs.append("N/A")
-                pe_signal_text_outputs.append("NEUTRAL")
-                pe_signal_class_outputs.append("badge bg-secondary")
-                pe_strength_outputs.append(0)
-                pe_strength_color_outputs.append("secondary")
-                pe_trade_status_outputs.append("")
-        else:
-            # Default values if stock not found
-            ce_strike_outputs.append("N/A")
-            ce_price_outputs.append("N/A")
-            ce_signal_text_outputs.append("NEUTRAL")
-            ce_signal_class_outputs.append("badge bg-secondary")
-            ce_strength_outputs.append(0)
-            ce_strength_color_outputs.append("secondary")
-            ce_trade_status_outputs.append("")
-            
-            pe_strike_outputs.append("N/A")
-            pe_price_outputs.append("N/A")
-            pe_signal_text_outputs.append("NEUTRAL")
-            pe_signal_class_outputs.append("badge bg-secondary")
-            pe_strength_outputs.append(0)
-            pe_strength_color_outputs.append("secondary")
-            pe_trade_status_outputs.append("")
-    
-    return (
-        ce_strike_outputs,
-        ce_price_outputs,
-        ce_signal_text_outputs,
-        ce_signal_class_outputs,
-        ce_strength_outputs,
-        ce_strength_color_outputs,
-        ce_trade_status_outputs,
-        pe_strike_outputs,
-        pe_price_outputs,
-        pe_signal_text_outputs,
-        pe_signal_class_outputs,
-        pe_strength_outputs,
-        pe_strength_color_outputs,
-        pe_trade_status_outputs
-    )
-
-# Update Market Sentiment Callback
-@app.callback(
-    [
-        Output("overall-sentiment", "children"),
-        Output("overall-sentiment", "className"),
-        Output("bullish-strength", "value"),
-        Output("bull-bear-ratio", "children")
-    ],
-    [Input('ui-data-store', 'data')]
-)
-def update_market_sentiment_ui(data):
-    if not isinstance(data, dict):
-        # Return some default or placeholder value
-        return "NEUTRAL", "badge bg-secondary fs-5", 50, "N/A"
-    
-    if not data or 'sentiment' not in data:
-        return "NEUTRAL", "badge bg-secondary fs-5", 50, "N/A"
-    
-    sentiment_data = data['sentiment']
-    overall_sentiment = sentiment_data.get("overall", "NEUTRAL")
-    
-    # Count individual sentiments
-    bullish_count = sum(1 for s in sentiment_data.values() if "BULLISH" in s)
-    bearish_count = sum(1 for s in sentiment_data.values() if "BEARISH" in s)
-    neutral_count = sum(1 for s in sentiment_data.values() if "NEUTRAL" in s)
-    
-    # Calculate bull/bear ratio
-    if bearish_count == 0:
-        bull_bear_ratio = "∞"  # infinity symbol if no bears
-    else:
-        bull_bear_ratio = f"{bullish_count / bearish_count:.1f}"
-    
-    # Calculate bullish strength as percentage
-    total_count = bullish_count + bearish_count + neutral_count
-    if total_count > 0:
-        bullish_strength = (bullish_count + (neutral_count * 0.5)) / total_count * 100
-    else:
-        bullish_strength = 50
-    
-    # Format overall sentiment
-    if "BULLISH" in overall_sentiment:
-        if "STRONGLY" in overall_sentiment or "MODERATELY" not in overall_sentiment:
-            overall_class = "badge bg-success fs-5"
-        else:
-            overall_class = "badge bg-success bg-opacity-75 fs-5"
-    elif "BEARISH" in overall_sentiment:
-        if "STRONGLY" in overall_sentiment or "MODERATELY" not in overall_sentiment:
-            overall_class = "badge bg-danger fs-5"
-        else:
-            overall_class = "badge bg-danger bg-opacity-75 fs-5"
-    else:
-        overall_class = "badge bg-secondary fs-5"
-    
-    return overall_sentiment, overall_class, bullish_strength, bull_bear_ratio
-
-# Update Performance Stats Callback
-@app.callback(
-    [
-        Output("total-pnl", "children"),
-        Output("total-pnl", "className"),
-        Output("daily-pnl", "children"),
-        Output("daily-pnl", "className"),
-        Output("win-rate", "children"),
-        Output("trades-today", "children"),
-    ],
-    [Input('ui-data-store', 'data')]
-)
-def update_performance_stats(data):
-    if not data or 'trading' not in data:
-        return "₹0.00", "text-secondary fs-5", "₹0.00", "text-secondary fs-5", "N/A (0/0)", "0"
-        
-    trading_data = data['trading']
-    
-    # Format total P&L
-    total_pnl = trading_data.get('total_pnl', 0)
-    if total_pnl > 0:
-        total_pnl_text = f"₹{total_pnl:.2f}"
-        total_pnl_class = "text-success fs-5"
-    elif total_pnl < 0:
-        total_pnl_text = f"-₹{abs(total_pnl):.2f}"
-        total_pnl_class = "text-danger fs-5"
-    else:
-        total_pnl_text = "₹0.00"
-        total_pnl_class = "text-secondary fs-5"
-    
-    # Format daily P&L
-    daily_pnl = trading_data.get('daily_pnl', 0)
-    if daily_pnl > 0:
-        daily_pnl_text = f"₹{daily_pnl:.2f}"
-        daily_pnl_class = "text-success fs-5"
-    elif daily_pnl < 0:
-        daily_pnl_text = f"-₹{abs(daily_pnl):.2f}"
-        daily_pnl_class = "text-danger fs-5"
-    else:
-        daily_pnl_text = "₹0.00"
-        daily_pnl_class = "text-secondary fs-5"
-    
-    # Calculate win rate
-    wins = trading_data.get('wins', 0)
-    losses = trading_data.get('losses', 0)
-    total_trades = wins + losses
-    if total_trades > 0:
-        win_rate = wins / total_trades * 100
-        win_rate_text = f"{win_rate:.1f}% ({wins}/{total_trades})"
-    else:
-        win_rate_text = "N/A (0/0)"
-    
-    # Format trades today
-    trades_today_text = str(trading_data.get('trades_today', 0))
-    
-    return total_pnl_text, total_pnl_class, daily_pnl_text, daily_pnl_class, win_rate_text, trades_today_text
-
-# Update Active Trades Callback
-@app.callback(
-    [
-        Output("active-trades-container", "children"),
-        Output("active-trades-count", "children")
-    ],
-    [Input('fast-interval', 'n_intervals')]
-)
-def update_active_trades(n_intervals):
-    active_trades = []
-    active_count = 0
-    
-    for option_key in list(trading_state.active_trades.keys()):
-        if trading_state.active_trades.get(option_key, False):
-            active_count += 1
-            
-            # Get trade details
-            entry_price = trading_state.entry_price[option_key]
-            entry_time = trading_state.entry_time[option_key]
-            stop_loss = trading_state.stop_loss[option_key]
-            target = trading_state.target[option_key]
-            quantity = trading_state.quantity[option_key]
-            strategy_type = trading_state.strategy_type[option_key]
-            trade_source = trading_state.trade_source.get(option_key, "TECHNICAL")
-            
-            # Get option details
-            option_info = options_data.get(option_key, {})
-            symbol = option_info.get("symbol", option_key)
-            parent_symbol = option_info.get("parent_symbol", "")
-            strike = option_info.get("strike", "")
-            option_type = option_info.get("option_type", "")
-            
-            # Calculate current P&L if price is available
-            current_price = option_info.get("ltp")
-            
-            if current_price is not None and entry_price is not None:
-                # Calculate P&L based on option type
-                if option_type == "CE":
-                    unrealized_pnl = (current_price - entry_price) * quantity
-                    pnl_pct = (current_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
-                else:  # PE
-                    unrealized_pnl = (entry_price - current_price) * quantity
-                    pnl_pct = (entry_price - current_price) / entry_price * 100 if entry_price > 0 else 0
-                
-                # Format P&L text and class
-                if unrealized_pnl > 0:
-                    pnl_text = f"₹{unrealized_pnl:.2f} ({pnl_pct:.2f}%)"
-                    pnl_class = "text-success"
-                elif unrealized_pnl < 0:
-                    pnl_text = f"-₹{abs(unrealized_pnl):.2f} ({pnl_pct:.2f}%)"
-                    pnl_class = "text-danger"
-                else:
-                    pnl_text = "₹0.00 (0.00%)"
-                    pnl_class = "text-secondary"
-            else:
-                pnl_text = "N/A"
-                pnl_class = "text-secondary"
-            
-            # Calculate time in trade
-            if entry_time:
-                time_in_trade = (datetime.now() - entry_time).total_seconds() / 60  # minutes
-                time_text = f"{time_in_trade:.1f} min"
-            else:
-                time_text = "N/A"
-            
-            # Create strategy badge
-            if strategy_type == "SCALP":
-                strategy_badge = html.Span("SCALP", className="badge bg-success ms-2")
-            elif strategy_type == "MOMENTUM":
-                strategy_badge = html.Span("MOMENTUM", className="badge bg-info ms-2")
-            elif strategy_type == "NEWS":
-                strategy_badge = html.Span("NEWS", className="badge bg-warning ms-2")
-            elif strategy_type == "SWING":
-                strategy_badge = html.Span("SWING", className="badge bg-primary ms-2")
-            else:
-                strategy_badge = ""
-            
-            # Create source badge if not technical
-            source_badge = ""
-            if trade_source and trade_source != "TECHNICAL":
-                source_badge = html.Span(trade_source, className="badge bg-dark ms-2 small")
-            
-            # Create trade card
-            trade_card = dbc.Card([
-                dbc.CardHeader([
-                    html.H5([
-                        f"{parent_symbol} {strike} {option_type}", 
-                        strategy_badge,
-                        source_badge
-                    ], className="mb-0 d-inline")
-                ], style=custom_css["header"]),
-                dbc.CardBody([
-                    dbc.Row([
-                        dbc.Col([
-                            html.Div([
-                                html.Span("Entry: ", className="text-muted me-1"),
-                                html.Span(f"₹{entry_price:.2f}" if entry_price else "N/A", className="text-light")
-                            ], className="mb-1"),
-                            html.Div([
-                                html.Span("Current: ", className="text-muted me-1"),
-                                html.Span(f"₹{current_price:.2f}" if current_price is not None else "N/A", 
-                                         className="text-info")
-                            ], className="mb-1"),
-                            html.Div([
-                                html.Span("P&L: ", className="text-muted me-1"),
-                                html.Span(pnl_text, className=pnl_class)
-                            ], className="mb-1")
-                        ], width=4),
-                        dbc.Col([
-                            html.Div([
-                                html.Span("Target: ", className="text-muted me-1"),
-                                html.Span(f"₹{target:.2f}" if target else "N/A", className="text-success")
-                            ], className="mb-1"),
-                            html.Div([
-                                html.Span("Stop Loss: ", className="text-muted me-1"),
-                                html.Span(f"₹{stop_loss:.2f}" if stop_loss else "N/A", className="text-danger")
-                            ], className="mb-1"),
-                            html.Div([
-                                html.Span("Quantity: ", className="text-muted me-1"),
-                                html.Span(str(quantity), className="text-light")
-                            ], className="mb-1")
-                        ], width=4),
-                        dbc.Col([
-                            html.Div([
-                                html.Span("Time in Trade: ", className="text-muted me-1"),
-                                html.Span(time_text, className="text-light"),
-                            ], className="mb-1"),
-                            html.Div([
-                                html.Span("Entry Time: ", className="text-muted me-1"),
-                                html.Span(entry_time.strftime("%H:%M:%S") if entry_time else "N/A", className="text-light")
-                            ], className="mb-1"),
-                            dbc.Button("Exit", id={"type": "exit-trade-btn", "index": option_key}, 
-                                     color="danger", size="sm", className="mt-1")
-                        ], width=4)
-                    ])
-                ], className="px-4 py-3")
-            ], 
-            style=custom_css["card"],
-            className="mb-3 border-info"
-            )
-            
-            active_trades.append(trade_card)
-    
-    # If no active trades, show a message
-    if not active_trades:
-        if not broker_connected:
-            active_trades = [html.Div("Trading is disabled - Broker not connected", 
-                                     className="text-center text-warning py-3")]
-        else:
-            active_trades = [html.Div("No active trades", 
-                                     className="text-center text-muted py-3")]
-    
-    return active_trades, active_count
-
-# Exit Trade Button Callback
-@app.callback(
-    [
-        Output("notification-toast", "is_open", allow_duplicate=True),
-        Output("notification-toast", "header", allow_duplicate=True),
-        Output("notification-toast", "children", allow_duplicate=True),
-        Output("notification-toast", "icon", allow_duplicate=True)
-    ],
-    [Input({"type": "exit-trade-btn", "index": ALL}, "n_clicks")],
-    [State({"type": "exit-trade-btn", "index": ALL}, "id")],
-    prevent_initial_call=True
-)
-def exit_trade_button(n_clicks, ids):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return False, "", "", "primary"
-    
-    # Find which button was clicked
-    btn_idx = 0
-    for i, clicks in enumerate(n_clicks):
-        if clicks is not None and clicks > 0:
-            btn_idx = i
-            break
-            
-    try:
-        # Parse the ID to get the option key
-        option_key = ids[btn_idx]["index"]
-        
-        # Exit the trade
-        success = exit_trade(option_key, reason="Manual Exit")
-        
-        if success:
-            return True, "Trade Exited", f"Successfully exited trade for {option_key}", "success"
-        else:
-            return True, "Error", f"Failed to exit trade for {option_key}", "danger"
-    except Exception as e:
-        logger.error(f"Error exiting trade: {str(e)}")
-        return True, "Error", f"Failed to exit trade: {str(e)}", "danger"
-
-# Update Recent Trades Callback
-@app.callback(
-    [
-        Output("recent-trades-container", "children"),
-        Output("recent-trades-count", "children"),
-        Output("pnl-graph", "figure")
-    ],
-    [Input('medium-interval', 'n_intervals')]
-)
-def update_trade_history(n_intervals):
-    # Get the 10 most recent trades
-    recent_trades = trading_state.trades_history[-10:] if trading_state.trades_history else []
-    
-    trade_cards = []
-    for trade in reversed(recent_trades):  # Show most recent first
-        option_key = trade['option_key']
-        entry_price = trade['entry_price']
-        exit_price = trade['exit_price']
-        pnl = trade['pnl']
-        pnl_pct = trade['pnl_pct']
-        reason = trade['reason']
-        strategy_type = trade['strategy_type']
-        parent_symbol = trade.get('parent_symbol', 'Unknown')
-        strike = trade.get('strike', 'Unknown')
-        option_type = trade.get('option_type', 'Unknown')
-        trade_source = trade.get('trade_source', 'TECHNICAL')
-        duration_min = trade.get('duration_minutes', 0)
-        
-        option_display = f"{parent_symbol} {strike} {option_type}"
-        
-        # Strategy badge
-        if strategy_type == "SCALP":
-            strategy_badge = html.Span("SCALP", className="badge bg-success ms-1")
-        elif strategy_type == "MOMENTUM":
-            strategy_badge = html.Span("MOMENTUM", className="badge bg-info ms-1")
-        elif strategy_type == "NEWS":
-            strategy_badge = html.Span("NEWS", className="badge bg-warning ms-1")
-        elif strategy_type == "SWING":
-            strategy_badge = html.Span("SWING", className="badge bg-primary ms-1")
-        else:
-            strategy_badge = ""
-        
-        # Format trade card
-        if pnl > 0:
-            pnl_text = f"₹{pnl:.2f} ({pnl_pct:.2f}%)"
-            pnl_class = "text-success"
-            border_class = "border-success"
-        elif pnl < 0:
-            pnl_text = f"-₹{abs(pnl):.2f} ({pnl_pct:.2f}%)"
-            pnl_class = "text-danger"
-            border_class = "border-danger"
-        else:
-            pnl_text = "₹0.00 (0.00%)"
-            pnl_class = "text-secondary"
-            border_class = "border-secondary"
-        
-        trade_card = dbc.Card([
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col([
-                        html.Div([
-                            html.Span(option_display, className="fw-bold"),
-                            strategy_badge
-                        ], className="d-flex align-items-center gap-2"),
-                        html.Div([
-                            html.Span(f"Entry: ₹{entry_price:.2f}", className="small me-2"),
-                            html.Span(f"Exit: ₹{exit_price:.2f}", className="small")
-                        ])
-                    ], width=6),
-                    dbc.Col([
-                        html.Div(pnl_text, className=f"fw-bold {pnl_class}"),
-                        html.Div([
-                            html.Span(f"{reason}", className="small text-muted me-2"),
-                            html.Span(f"{duration_min:.1f}min", className="small text-muted")
-                        ]),
-                        html.Div(trade['exit_time'].strftime("%H:%M:%S"), className="small text-muted")
-                    ], width=6, className="text-end")
-                ])
-            ], className="px-3 py-2")
-        ], 
-        style=dict(custom_css["card_alt"], **{"margin-bottom": "8px"}),
-        className=f"mb-2 {border_class}"
-        )
-        
-        trade_cards.append(trade_card)
-    
-    # If no trades, show a message
-    if not trade_cards:
-        trade_cards = [html.Div("No recent trades", className="text-center text-muted py-3")]
-    
-    # Create P&L graph
-    if trading_state.trades_history:
-        # Prepare data for graph
-        dates = [trade['exit_time'] for trade in trading_state.trades_history]
-        cumulative_pnl = np.cumsum([trade['pnl'] for trade in trading_state.trades_history])
-        
-        # Add trade sources and strategies for hover info
-        hover_text = []
-        for i, trade in enumerate(trading_state.trades_history):
-            source = trade.get('trade_source', 'TECHNICAL')
-            strategy = trade.get('strategy_type', 'Unknown')
-            option = f"{trade.get('parent_symbol', '')} {trade.get('strike', '')} {trade.get('option_type', '')}"
-            pnl = trade.get('pnl', 0)
-            
-            hover_info = (
-                f"Trade: {i+1}<br>"
-                f"Option: {option}<br>"
-                f"PnL: ₹{pnl:.2f}<br>"
-                f"Strategy: {strategy}<br>"
-                f"Source: {source}"
-            )
-            hover_text.append(hover_info)
-            
-        # Create the figure
-        fig = go.Figure()
-        
-        # Add fill under the line - green above zero, red below zero
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=[0] * len(dates),  # Base line at zero
-            mode='lines',
-            line=dict(color='rgba(255,255,255,0.2)'),
-            showlegend=False,
-            hoverinfo='none'
-        ))
-        
-        # Main line with markers for trades
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=cumulative_pnl,
-            mode='lines+markers',
-            line=dict(color='#00bcd4', width=3),
-            marker=dict(
-                size=8, 
-                color=[
-                    'green' if trading_state.trades_history[i]['pnl'] > 0 else 'red' 
-                    for i in range(len(trading_state.trades_history))
-                ],
-                line=dict(width=1, color='#FFF')
-            ),
-            fill='tonexty',
-            fillcolor='rgba(0,188,140,0.2)',  # Light green with opacity
-            name='P&L',
-            hovertext=hover_text,
-            hoverinfo='text+y'
-        ))
-        
-        # Customized modern layout
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(
-                title=None,
-                showgrid=False,
-                zeroline=False
-            ),
-            yaxis=dict(
-                title=None,
-                showgrid=True,
-                gridcolor='rgba(255,255,255,0.1)',
-                zeroline=True,
-                zerolinecolor='rgba(255,255,255,0.3)',
-                zerolinewidth=1
-            ),
-            hovermode='closest'
-        )
-    else:
-        # Empty figure if no trades
-        fig = go.Figure()
-        fig.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=10, b=10)
-        )
-        fig.add_annotation(
-            text="No trade history data available",
-            showarrow=False,
-            xref="paper", yref="paper",
-            x=0.5, y=0.5,
-            font_size=14,
-            font_color="gray"
-        )
-    
-    return trade_cards, len(trading_state.trades_history), fig
-
-
 def main():
     """Main entry point with error handling"""
     try:
