@@ -20,8 +20,102 @@ import json
 import random
 from functools import wraps
 import re
-import warnings
+import warnings  # Add this import
 import yfinance as yf
+
+# Check for feedparser (required for news functionality)
+try:
+    import feedparser
+except ImportError:
+    print("Warning: feedparser not installed. News functionality will be limited.")
+    print("Install with: pip install feedparser")
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+# Initialize Dash app
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.DARKLY], 
+    suppress_callback_exceptions=True,
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+    ]
+)
+app.title = "Options Trading Dashboard"
+
+# Define custom CSS for smooth transitions
+app_css = '''
+/* Base transitions */
+.dynamic-update {
+    transition: all 0.3s ease-in-out !important;
+}
+
+/* Price updates */
+.price-element {
+    transition: color 0.3s ease, background-color 0.3s ease !important;
+}
+
+/* Badge transitions */
+.badge-transition {
+    transition: background-color 0.3s ease, color 0.3s ease !important;
+}
+
+/* Hardware acceleration to prevent flickering */
+.no-flicker {
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+
+/* Smooth progress bar updates */
+.progress-bar {
+    transition: width 0.3s ease-in-out !important;
+}
+
+/* Value updates */
+.value-update {
+    transition: opacity 0.3s, transform 0.3s, color 0.3s;
+}
+
+/* Card updates */
+.card-update {
+    transition: border-color 0.3s ease-in-out;
+}
+
+/* Remove blinking animations */
+.highlight-positive, .highlight-negative {
+    animation: none !important;
+    transition: background-color 0.3s ease-in-out;
+}
+
+/* Color transitions */
+.color-transition {
+    transition: color 0.3s ease-in-out;
+}
+'''
+
+# The index string MUST include all required placeholders
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            ''' + app_css + '''
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # Check for feedparser (required for news functionality)
 try:
@@ -1603,7 +1697,265 @@ def fetch_option_data(option_key):
         logger.debug(f"Option {option_key} has recent valid data, skipping update")
         return True
     
-    # Rest of your existing function...
+    try:
+        # Extract essential option details
+        exchange = option_info.get("exchange", "NFO")
+        token = option_info.get("token")
+        symbol = option_info.get("symbol")
+        parent_symbol = option_info.get("parent_symbol")
+        option_type = option_info.get("option_type", "").lower()
+        strike = option_info.get("strike")
+        expiry = option_info.get("expiry")
+        
+        # Skip invalid options
+        if not token or not symbol:
+            logger.warning(f"Skipping option {option_key}: Missing token or symbol")
+            return False
+        
+        # Use parent stock price and strike price for fallback calculations
+        parent_price = None
+        strike_price = float(strike) if strike else 0
+        if parent_symbol in stocks_data:
+            parent_price = stocks_data[parent_symbol].get("ltp")
+        
+        # Track if we're using a fallback price
+        using_fallback = False
+        fallback_reason = None
+        
+        try:
+            # Attempt to fetch LTP data
+            logger.info(f"Fetching LTP for {symbol} (Token: {token}, Exchange: {exchange})")
+            
+            ltp_resp = smart_api.ltpData(exchange, symbol, token)
+            
+            # Analyze response with detailed logging
+            if isinstance(ltp_resp, dict):
+                if not ltp_resp.get("status"):
+                    # Handle error cases
+                    error_msg = ltp_resp.get("message", "Unknown error")
+                    error_code = ltp_resp.get("errorcode", "N/A")
+                    logger.warning(f"LTP fetch failed for {symbol}. Error: {error_msg} (Code: {error_code})")
+                    
+                    # Check specific error types
+                    if "token" in error_msg.lower() or "symbol" in error_msg.lower() or error_code == "AB1018":
+                        # Token or symbol issue - try to recover
+                        logger.info(f"Attempting to refresh token for {symbol}")
+                        
+                        # Try to search for the symbol directly
+                        if option_info.get("is_fallback", False):
+                            # For fallback tokens, we need a more advanced search
+                            new_token_info = search_and_validate_option_token(
+                                parent_symbol, strike_price, option_type, expiry
+                            )
+                            
+                            if new_token_info and new_token_info.get("token") != token:
+                                new_token = new_token_info.get("token")
+                                new_symbol = new_token_info.get("symbol", symbol)
+                                
+                                logger.info(f"Found new token for {symbol}: {new_token}")
+                                
+                                # Update the option info
+                                option_info["token"] = new_token
+                                option_info["symbol"] = new_symbol
+                                option_info["is_fallback"] = new_token_info.get("is_fallback", False)
+                                
+                                # Try again with the new token
+                                try:
+                                    new_resp = smart_api.ltpData(exchange, new_symbol, new_token)
+                                    if new_resp.get("status"):
+                                        ltp_resp = new_resp
+                                        logger.info(f"Successfully fetched data with new token")
+                                    else:
+                                        logger.warning(f"Still failed with new token: {new_resp}")
+                                        using_fallback = True
+                                        fallback_reason = "Token refresh failed"
+                                except Exception as e:
+                                    logger.warning(f"Error using new token: {e}")
+                                    using_fallback = True
+                                    fallback_reason = "Error with new token"
+                            else:
+                                using_fallback = True
+                                fallback_reason = "No new token found"
+                        else:
+                            # For non-fallback tokens, search for the symbol in CSV
+                            using_fallback = True
+                            fallback_reason = "Could not find token in CSV"
+                    else:
+                        # Other types of errors
+                        using_fallback = True
+                        fallback_reason = error_msg
+                    
+                    # If we need to use fallback, calculate theoretical price
+                    if using_fallback:
+                        ltp = None
+                        if parent_price and strike_price:
+                            # More sophisticated theoretical option pricing
+                            time_to_expiry = 7/365  # Default 7 days to expiry
+                            volatility = 0.3  # Default volatility estimate (30%)
+                            
+                            if option_type == "ce":
+                                # Simple call option pricing - intrinsic value + time value
+                                intrinsic = max(0, parent_price - strike_price)
+                                time_value = parent_price * volatility * time_to_expiry
+                                ltp = max(intrinsic + time_value, 5)
+                            else:  # PE
+                                # Simple put option pricing - intrinsic value + time value
+                                intrinsic = max(0, strike_price - parent_price)
+                                time_value = parent_price * volatility * time_to_expiry
+                                ltp = max(intrinsic + time_value, 5)
+                                
+                            logger.info(f"Using theoretical price for {symbol}: {ltp} (Reason: {fallback_reason})")
+                        else:
+                            # Use previous price or default
+                            ltp = option_info.get("ltp", 50)
+                            logger.info(f"Using previous/default price for {symbol}: {ltp} (Reason: {fallback_reason})")
+                else:
+                    # Extract data with validation
+                    data = ltp_resp.get("data", {})
+                    ltp = float(data.get("ltp", 0) or 0)
+                    if ltp <= 0:
+                        # Try theoretical price
+                        using_fallback = True
+                        fallback_reason = "API returned zero/negative price"
+                        
+                        if parent_price and strike_price:
+                            if option_type == "ce":
+                                ltp = max(parent_price - strike_price, 5) if parent_price > strike_price else 5
+                            else:  # PE
+                                ltp = max(strike_price - parent_price, 5) if strike_price > parent_price else 5
+                        else:
+                            ltp = option_info.get("ltp", 50)
+                    else:
+                        logger.info(f"Valid LTP received for {symbol}: {ltp}")
+            else:
+                # Handle invalid response format
+                logger.error(f"Invalid response format for {symbol}")
+                using_fallback = True
+                fallback_reason = "Invalid API response format"
+                
+                if parent_price and strike_price:
+                    if option_type == "ce":
+                        ltp = max(parent_price - strike_price, 5) if parent_price > strike_price else 5
+                    else:  # PE
+                        ltp = max(strike_price - parent_price, 5) if strike_price > parent_price else 5
+                else:
+                    ltp = option_info.get("ltp", 50)
+            
+            # Ensure valid, non-zero LTP
+            ltp = max(float(ltp), 0.01)
+        
+        except Exception as fetch_err:
+            # Comprehensive error logging
+            logger.error(f"Critical error fetching LTP for {symbol}: {fetch_err}", exc_info=True)
+            using_fallback = True
+            fallback_reason = str(fetch_err)
+            
+            # Fallback to parent stock's price
+            if parent_symbol and parent_symbol in stocks_data:
+                stock_price = stocks_data[parent_symbol].get("ltp", 50)
+                strike = float(option_info.get("strike", 0))
+                
+                # Simple option pricing model as fallback
+                if strike > 0:
+                    if option_type == "ce":  # Call option
+                        ltp = max(stock_price - strike, 5) if stock_price > strike else 5
+                    else:  # Put option
+                        ltp = max(strike - stock_price, 5) if strike > stock_price else 5
+                else:
+                    ltp = 50
+            else:
+                ltp = 50
+                logger.warning(f"No parent stock data for fallback pricing, using default price: {ltp}")
+        
+        # Final validation to ensure we have a valid price
+        ltp = max(float(ltp), 0.01)
+        
+        # Update option data with safe calculations
+        current_open = option_info.get("open")
+        current_high = option_info.get("high")
+        current_low = option_info.get("low")
+        
+        # Update option info
+        previous_price = option_info.get("ltp", ltp)  # Store current as previous
+        option_info.update({
+            "previous": previous_price,
+            "ltp": ltp,
+            "open": current_open if current_open is not None and current_open > 0 else ltp,
+            "high": max(current_high if current_high is not None else 0, ltp),
+            "low": min(current_low if current_low is not None and current_low > 0 else float('inf'), ltp),
+            "change_percent": ((ltp / previous_price) - 1) * 100 if previous_price and previous_price > 0 else 0,
+            "last_updated": datetime.now(),
+            "using_fallback": using_fallback,
+            "fallback_reason": fallback_reason if using_fallback else None
+        })
+        
+        # Add to price history
+        timestamp = pd.Timestamp.now()
+        
+        new_data = {
+            'timestamp': timestamp,
+            'price': ltp,
+            'volume': 0,
+            'open_interest': 0,
+            'change': option_info.get("change_percent", 0),
+            'open': option_info["open"],
+            'high': option_info["high"],
+            'low': option_info["low"],
+            'is_fallback': using_fallback
+        }
+        
+        # Thread-safe price history update
+        with price_history_lock:
+            # Ensure all columns exist
+            for col in new_data.keys():
+                if col not in option_info["price_history"].columns:
+                    option_info["price_history"][col] = np.nan
+            
+            option_info["price_history"] = pd.concat([
+                option_info["price_history"], 
+                pd.DataFrame([new_data])
+            ], ignore_index=True)
+            
+            # Limit history size
+            if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+        
+        # Generate signals with fallback
+        try:
+            generate_option_signals(option_key)
+        except Exception as signal_err:
+            logger.warning(f"Signal generation failed for {option_key}: {signal_err}")
+        
+        # Update last data update timestamp
+        last_data_update["options"][option_key] = datetime.now()
+        
+        # Update UI data store for primary options
+        if parent_symbol and option_type:
+            # Check if this is the primary option for the stock
+            primary_option_key = stocks_data.get(parent_symbol, {}).get(f"primary_{option_type}")
+            
+            if primary_option_key == option_key:
+                # Ensure the parent symbol exists in UI data store
+                if parent_symbol not in ui_data_store['options']:
+                    ui_data_store['options'][parent_symbol] = {}
+                
+                # Update UI data
+                ui_data_store['options'][parent_symbol][option_type] = {
+                    'strike': option_info.get("strike", "N/A"),
+                    'price': ltp,
+                    'signal': option_info.get("signal", 0),
+                    'strength': option_info.get("strength", 0),
+                    'trend': option_info.get("trend", "NEUTRAL"),
+                    'using_fallback': using_fallback
+                }
+                
+                logger.info(f"Updated UI data for {parent_symbol} {option_type} option")
+        
+        return True
+    
+    except Exception as main_err:
+        logger.error(f"Comprehensive error updating option {option_key}: {main_err}", exc_info=True)
+        return False   
 def update_all_options():
     """
     Update all options with a more efficient prioritized approach using caching
@@ -1618,13 +1970,13 @@ def update_all_options():
     # Prioritize options to update
     priority_options = []
     regular_options = []
-    last_updated_times = {}
+    
+    # Create a default datetime for options without last_updated
+    default_time = datetime.min
     
     for option_key, option_info in options_data.items():
         parent_symbol = option_info.get("parent_symbol")
         option_type = option_info.get("option_type", "").lower()
-        last_updated = option_info.get("last_updated")
-        last_updated_times[option_key] = last_updated or datetime.min  # Use min datetime if None
         
         # Check if this is a primary option for any stock
         is_primary = False
@@ -1649,11 +2001,13 @@ def update_all_options():
         # Small delay between requests
         time.sleep(0.01)
     
-    # Sort regular options by last update time, oldest first
-    sorted_regular_options = sorted(
-        regular_options,
-        key=lambda k: last_updated_times.get(k, datetime.min)
-    )
+    # Sort regular options by last update time, oldest first 
+    # Use a custom key function to handle None values
+    def get_update_time(option_key):
+        last_updated = options_data[option_key].get("last_updated")
+        return last_updated if last_updated is not None else default_time
+    
+    sorted_regular_options = sorted(regular_options, key=get_update_time)
     
     # Update a limited number of regular options each cycle
     max_regular_updates = min(len(sorted_regular_options), 10)  # Limit to 10 options per cycle
@@ -1667,6 +2021,7 @@ def update_all_options():
     
     # Log overall update status
     logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
+
 def update_option_selection(force_update=False):
     """
     Update option selection for all stocks based on current prices
@@ -4010,20 +4365,42 @@ def add_news_mentioned_stocks():
         if broker_connected:
             fetch_stock_data(stock)
 
-# Option data callbacks
+# CE Option data callback
 @app.callback(
-    [Output({"type": f"option-{option_type}-price", "index": MATCH}, "children"),
-     Output({"type": f"option-{option_type}-price", "index": MATCH}, "style"),
-     Output({"type": f"option-{option_type}-strike", "index": MATCH}, "children"),
-     Output({"type": f"option-{option_type}-signal", "index": MATCH}, "children"),
-     Output({"type": f"option-{option_type}-signal", "index": MATCH}, "className"),
-     Output({"type": f"option-{option_type}-strength", "index": MATCH}, "value"),
-     Output({"type": f"option-{option_type}-strength", "index": MATCH}, "color")],
+    [Output({"type": "option-ce-price", "index": MATCH}, "children"),
+     Output({"type": "option-ce-price", "index": MATCH}, "style"),
+     Output({"type": "option-ce-strike", "index": MATCH}, "children"),
+     Output({"type": "option-ce-signal", "index": MATCH}, "children"),
+     Output({"type": "option-ce-signal", "index": MATCH}, "className"),
+     Output({"type": "option-ce-strength", "index": MATCH}, "value"),
+     Output({"type": "option-ce-strength", "index": MATCH}, "color")],
     [Input('fast-interval', 'n_intervals')],
-    [State({"type": f"option-{option_type}-price", "index": MATCH}, "id"),
+    [State({"type": "option-ce-price", "index": MATCH}, "id"),
      State('ui-data-store', 'data')]
 )
-def update_option_data(n_intervals, id_dict, ui_data, option_type="ce"):
+def update_ce_option_data(n_intervals, id_dict, ui_data):
+    """Update call option price and related data"""
+    return update_option_data(n_intervals, id_dict, ui_data, "ce")
+
+# PE Option data callback
+@app.callback(
+    [Output({"type": "option-pe-price", "index": MATCH}, "children"),
+     Output({"type": "option-pe-price", "index": MATCH}, "style"),
+     Output({"type": "option-pe-strike", "index": MATCH}, "children"),
+     Output({"type": "option-pe-signal", "index": MATCH}, "children"),
+     Output({"type": "option-pe-signal", "index": MATCH}, "className"),
+     Output({"type": "option-pe-strength", "index": MATCH}, "value"),
+     Output({"type": "option-pe-strength", "index": MATCH}, "color")],
+    [Input('fast-interval', 'n_intervals')],
+    [State({"type": "option-pe-price", "index": MATCH}, "id"),
+     State('ui-data-store', 'data')]
+)
+def update_pe_option_data(n_intervals, id_dict, ui_data):
+    """Update put option price and related data"""
+    return update_option_data(n_intervals, id_dict, ui_data, "pe")
+
+# Helper function for updating option data
+def update_option_data(n_intervals, id_dict, ui_data, option_type):
     """Update option price and related data"""
     if not ui_data or 'options' not in ui_data:
         return "N/A", {}, "N/A", "NEUTRAL", "badge bg-secondary", 0, "secondary"
@@ -4077,8 +4454,7 @@ def update_option_data(n_intervals, id_dict, ui_data, option_type="ce"):
     else:
         color = "secondary"  # Grey for neutral
     
-    return price_display, price_style, strike_display, trend, badge_class, strength_pct, color
-@app.callback(
+    return price_display, price_style, strike_display, trend, badge_class, strength_pct, color@app.callback(
     Output("connection-details", "className"),
     [Input("retry-connection-button", "n_clicks")],
     prevent_initial_call=True
@@ -4331,65 +4707,6 @@ def update_news_data():
             execute_news_based_trades()
     
     last_news_update = current_time
-app = dash.Dash(
-    __name__,
-    external_stylesheets=[dbc.themes.DARKLY], 
-    suppress_callback_exceptions=True,
-    meta_tags=[
-        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
-    ]
-)
-app.title = "Options Trading Dashboard"
-
-# Define custom CSS for smooth transitions
-app_css = '''
-/* Base transitions */
-.dynamic-update {
-    transition: all 0.3s ease-in-out !important;
-}
-
-/* Price updates */
-.price-element {
-    transition: color 0.3s ease, background-color 0.3s ease !important;
-}
-
-/* Badge transitions */
-.badge-transition {
-    transition: background-color 0.3s ease, color 0.3s ease !important;
-}
-
-/* Hardware acceleration to prevent flickering */
-.no-flicker {
-    transform: translateZ(0);
-    backface-visibility: hidden;
-}
-
-/* Smooth progress bar updates */
-.progress-bar {
-    transition: width 0.3s ease-in-out !important;
-}
-
-/* Value updates */
-.value-update {
-    transition: opacity 0.3s, transform 0.3s, color 0.3s;
-}
-
-/* Card updates */
-.card-update {
-    transition: border-color 0.3s ease-in-out;
-}
-
-/* Remove blinking animations */
-.highlight-positive, .highlight-negative {
-    animation: none !important;
-    transition: background-color 0.3s ease-in-out;
-}
-
-/* Color transitions */
-.color-transition {
-    transition: color 0.3s ease-in-out;
-}
-'''
 
 # Override the default index string to include custom CSS
 app.index_string = '''
@@ -5832,6 +6149,7 @@ def update_ui_data_store(n_intervals, previous_data):
                 }
     
     return result
+# Main function
 def main():
     """Main entry point with error handling"""
     try:
