@@ -6326,6 +6326,8 @@ def create_stock_control_card():
         className="mb-3 border-warning"
     )
 
+# Continuation of the UI components section
+
 def create_stock_option_card(symbol):
     """Create a card for a stock with its options."""
     stock_info = stocks_data.get(symbol, {})
@@ -6403,4 +6405,1577 @@ def create_stock_option_card(symbol):
                     ], className="mb-1"),
                     html.Div([
                         html.Span("S/R Levels: ", className="text-muted me-2"),
-                        html.Span(id={"type": "stock-sr-levels", "index": symbol}, className="text-light
+                        html.Span(id={"type": "stock-sr-levels", "index": symbol}, className="text-light small smooth-transition")
+                    ])
+                ], width=4),
+                
+                dbc.Col([
+                    html.Div([
+                        html.Span("Volatility: ", className="text-muted me-2"),
+                        html.Span(id={"type": "stock-volatility", "index": symbol}, className="text-light smooth-transition")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("Signal: ", className="text-muted me-2"),
+                        html.Span(id={"type": "stock-signal", "index": symbol}, className="badge smooth-transition")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("Last Update: ", className="text-muted me-2"),
+                        html.Span(id={"type": "stock-last-update", "index": symbol}, className="text-light small smooth-transition")
+                    ])
+                ], width=4)
+            ], className="mb-3"),
+            
+            # Options Row
+            dbc.Row([
+                # CE Option Column
+                dbc.Col([
+                    html.Div([
+                        html.H5("Call Option", className="d-inline"),
+                        html.Span(id={"type": "ce-strike", "index": symbol}, className="badge bg-secondary ms-2"),
+                    ], className="mb-2"),
+                    
+                    html.Div([
+                        html.Span("Price: ", className="text-muted me-2"),
+                        html.Span(id={"type": "ce-price", "index": symbol}, className="fs-5 text-light dynamic-update price-element")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        html.Span("Signal: ", className="text-muted me-2"),
+                        html.Span(id={"type": "ce-signal", "index": symbol}, className="badge smooth-transition badge-transition")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        html.Span("Strength: ", className="text-muted me-2"),
+                        html.Div([
+                            dbc.Progress(
+                                id={"type": "ce-strength", "index": symbol},
+                                value=0, 
+                                className="progress-bar"
+                            )
+                        ], className="w-75 d-inline-block")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        dbc.Button(
+                            "Trade", 
+                            id={"type": "trade-ce-btn", "index": symbol},
+                            color="success", 
+                            size="sm",
+                            className="mt-1",
+                            disabled=not broker_connected
+                        )
+                    ])
+                ], width=6),
+                
+                # PE Option Column
+                dbc.Col([
+                    html.Div([
+                        html.H5("Put Option", className="d-inline"),
+                        html.Span(id={"type": "pe-strike", "index": symbol}, className="badge bg-secondary ms-2"),
+                    ], className="mb-2"),
+                    
+                    html.Div([
+                        html.Span("Price: ", className="text-muted me-2"),
+                        html.Span(id={"type": "pe-price", "index": symbol}, className="fs-5 text-light dynamic-update price-element")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        html.Span("Signal: ", className="text-muted me-2"),
+                        html.Span(id={"type": "pe-signal", "index": symbol}, className="badge smooth-transition badge-transition")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        html.Span("Strength: ", className="text-muted me-2"),
+                        html.Div([
+                            dbc.Progress(
+                                id={"type": "pe-strength", "index": symbol},
+                                value=0, 
+                                className="progress-bar"
+                            )
+                        ], className="w-75 d-inline-block")
+                    ], className="mb-1"),
+                    
+                    html.Div([
+                        dbc.Button(
+                            "Trade", 
+                            id={"type": "trade-pe-btn", "index": symbol},
+                            color="success", 
+                            size="sm",
+                            className="mt-1",
+                            disabled=not broker_connected
+                        )
+                    ])
+                ], width=6)
+            ])
+        ], className="px-3 py-3")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_broker_connection_card():
+    """Create a card for broker connection status."""
+    connection_status = "Connected" if broker_connected else "Disconnected"
+    status_class = "text-success" if broker_connected else "text-danger"
+    
+    return dbc.Card([
+        dbc.CardHeader(html.H4("Broker Connection", className="text-primary mb-0"), style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Status: ", className="text-muted me-2"),
+                        html.Span(id="broker-status", className=f"fs-5 {status_class}")
+                    ], className="mb-2"),
+                    html.Div(id="broker-error-message", className="text-warning small"),
+                ], width=7),
+                dbc.Col([
+                    dbc.Button(
+                        "Connect", 
+                        id="connect-broker-button", 
+                        color="success", 
+                        className="w-100 mb-2",
+                        disabled=broker_connected
+                    ),
+                    dbc.Button(
+                        "Disconnect", 
+                        id="disconnect-broker-button", 
+                        color="danger", 
+                        className="w-100",
+                        disabled=not broker_connected
+                    )
+                ], width=5)
+            ])
+        ], className="px-4 py-3")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_trade_control_card():
+    """Create a card for trading control settings."""
+    return dbc.Card([
+        dbc.CardHeader(html.H4("Trading Controls", className="text-success mb-0"), style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    dbc.Switch(
+                        id="toggle-scalp",
+                        label="Scalping",
+                        value=strategy_settings["SCALP_ENABLED"],
+                        className="mb-2"
+                    ),
+                    dbc.Switch(
+                        id="toggle-momentum",
+                        label="Momentum",
+                        value=strategy_settings["MOMENTUM_ENABLED"],
+                        className="mb-2"
+                    ),
+                ], width=6),
+                dbc.Col([
+                    dbc.Switch(
+                        id="toggle-swing",
+                        label="Swing",
+                        value=strategy_settings["SWING_ENABLED"],
+                        className="mb-2"
+                    ),
+                    dbc.Switch(
+                        id="toggle-news",
+                        label="News-based",
+                        value=strategy_settings["NEWS_ENABLED"],
+                        className="mb-2"
+                    ),
+                ], width=6)
+            ]),
+            html.Hr(className="my-2"),
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Risk per trade: ", className="text-muted me-2"),
+                        html.Span(f"{RISK_PER_TRADE}%", className="text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Max trades/day: ", className="text-muted me-2"),
+                        html.Span(id="max-trades-display", className="text-light")
+                    ], className="mb-2"),
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("Max daily loss: ", className="text-muted me-2"),
+                        html.Span(f"{MAX_LOSS_PERCENTAGE}%", className="text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Trades today: ", className="text-muted me-2"),
+                        html.Span(id="trades-today-display", className="text-light")
+                    ], className="mb-2"),
+                ], width=6)
+            ])
+        ], className="px-4 py-3")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_active_trades_card():
+    """Create a card for active trades."""
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H4("Active Trades", className="text-warning mb-0 d-inline"),
+            dbc.Badge(id="active-trades-count", color="light", className="ms-2 text-dark")
+        ], style=custom_css["header"]),
+        dbc.CardBody([
+            html.Div(id="active-trades-container", className="trades-container")
+        ], className="px-2 py-2")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_trade_history_card():
+    """Create a card for trade history."""
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H4("Trade History", className="text-info mb-0 d-inline"),
+            dbc.Badge(id="trade-history-count", color="light", className="ms-2 text-dark")
+        ], style=custom_css["header"]),
+        dbc.CardBody([
+            html.Div(id="trade-history-container", className="trades-container")
+        ], className="px-2 py-2")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_performance_card():
+    """Create a card for trading performance metrics."""
+    return dbc.Card([
+        dbc.CardHeader(html.H4("Trading Performance", className="text-primary mb-0"), style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Total P&L: ", className="text-muted me-2"),
+                        html.Span(id="total-pnl", className="fs-4 dynamic-update value-update")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Daily P&L: ", className="text-muted me-2"),
+                        html.Span(id="daily-pnl", className="fs-5 dynamic-update value-update")
+                    ], className="mb-2"),
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("Win Rate: ", className="text-muted me-2"),
+                        html.Span(id="win-rate", className="fs-5 text-light")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Win/Loss: ", className="text-muted me-2"),
+                        html.Span(id="win-loss-ratio", className="text-light")
+                    ], className="mb-2"),
+                ], width=6)
+            ]),
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Avg Win: ", className="text-muted me-2"),
+                        html.Span(id="avg-win", className="text-light")
+                    ], className="mb-2"),
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("Avg Loss: ", className="text-muted me-2"),
+                        html.Span(id="avg-loss", className="text-light")
+                    ], className="mb-2"),
+                ], width=6)
+            ])
+        ], className="px-4 py-3")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_news_card():
+    """Create a card for news feed."""
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H4("Market News", className="text-success mb-0 d-inline"),
+            dbc.Badge(id="news-count", color="light", className="ms-2 text-dark")
+        ], style=custom_css["header"]),
+        dbc.CardBody([
+            html.Div(id="news-container", className="news-container")
+        ], className="px-2 py-2 overflow-auto", style={"max-height": "300px"})
+    ], style=custom_css["card"], className="mb-3")
+
+def create_market_overview_card():
+    """Create a card for market overview."""
+    return dbc.Card([
+        dbc.CardHeader(html.H4("Market Overview", className="text-info mb-0"), style=custom_css["header"]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span("Market Sentiment: ", className="text-muted me-2"),
+                        html.Span(id="overall-sentiment", className="badge badge-transition")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Active Signals: ", className="text-muted me-2"),
+                        html.Span(id="active-signals-count", className="text-light")
+                    ], className="mb-2"),
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("System Health: ", className="text-muted me-2"),
+                        html.Span(id="system-health", className="badge badge-transition")
+                    ], className="mb-2"),
+                    html.Div([
+                        html.Span("Last Update: ", className="text-muted me-2"),
+                        html.Span(id="last-update-time", className="text-light small")
+                    ], className="mb-2"),
+                ], width=6)
+            ])
+        ], className="px-4 py-3")
+    ], style=custom_css["card"], className="mb-3")
+
+def create_active_trade_item(option_key):
+    """Create an item for an active trade."""
+    with options_data_lock:
+        if option_key not in options_data:
+            return html.Div()
+        
+        option_info = options_data[option_key]
+        parent_symbol = option_info.get("parent_symbol", "")
+        option_type = option_info.get("option_type", "")
+        strike = option_info.get("strike", "")
+    
+    with trading_state_lock:
+        entry_price = trading_state.entry_price.get(option_key, 0)
+        entry_time = trading_state.entry_time.get(option_key, datetime.now())
+        stop_loss = trading_state.stop_loss.get(option_key, 0)
+        target = trading_state.target.get(option_key, 0)
+        quantity = trading_state.quantity.get(option_key, 0)
+        strategy = trading_state.strategy_type.get(option_key, "")
+        
+    # Calculate duration
+    duration_min = (datetime.now() - entry_time).total_seconds() / 60 if entry_time else 0
+    
+    return dbc.Card([
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span(f"{parent_symbol} {strike} {option_type}", className="fs-5 text-light"),
+                        html.Span(strategy, className="badge bg-info ms-2")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("Entry: ", className="text-muted small"),
+                        html.Span(f"₹{entry_price:.2f} x {quantity}", className="text-light small"),
+                        html.Span(f" ({entry_time.strftime('%H:%M:%S')})", className="text-muted small")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("Duration: ", className="text-muted small"),
+                        html.Span(id={"type": "trade-duration", "index": option_key}, className="text-light small")
+                    ], className="mb-1"),
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Span("Current: ", className="text-muted small"),
+                        html.Span(id={"type": "trade-current", "index": option_key}, className="text-light small")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("P&L: ", className="text-muted small"),
+                        html.Span(id={"type": "trade-pnl", "index": option_key}, className="small dynamic-update")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span("SL: ", className="text-muted small"),
+                        html.Span(f"₹{stop_loss:.2f}", className="text-danger small"),
+                        html.Span(" | Target: ", className="text-muted small"),
+                        html.Span(f"₹{target:.2f}", className="text-success small")
+                    ], className="mb-1"),
+                ], width=4),
+                dbc.Col([
+                    dbc.Button("Exit", id={"type": "exit-trade-btn", "index": option_key}, 
+                             color="danger", size="sm", className="w-100 mb-1"),
+                ], width=2)
+            ])
+        ], className="p-2")
+    ], style=custom_css["card_alt"], className="mb-2 trade-item card-update")
+
+def create_trade_history_item(trade):
+    """Create an item for a historical trade."""
+    option_key = trade.get('option_key', '')
+    parent_symbol = trade.get('parent_symbol', '')
+    strategy_type = trade.get('strategy_type', '')
+    option_type = trade.get('option_type', '')
+    strike = trade.get('strike', '')
+    
+    entry_time = trade.get('entry_time', datetime.now())
+    exit_time = trade.get('exit_time', datetime.now())
+    duration_min = trade.get('duration_minutes', 0)
+    
+    entry_price = trade.get('entry_price', 0)
+    exit_price = trade.get('exit_price', 0)
+    quantity = trade.get('quantity', 0)
+    pnl = trade.get('pnl', 0)
+    pnl_pct = trade.get('pnl_pct', 0)
+    reason = trade.get('reason', 'Unknown')
+    
+    # Determine text color based on P&L
+    pnl_color = "text-success" if pnl > 0 else "text-danger" if pnl < 0 else "text-light"
+    duration_str = f"{duration_min:.1f}m" if duration_min < 60 else f"{duration_min/60:.1f}h"
+    
+    # Create the trade history item
+    return dbc.Card([
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Span(f"{parent_symbol} {strike} {option_type}", className="text-light"),
+                        html.Span(strategy_type, className="badge bg-info ms-2 small")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span(f"{entry_time.strftime('%H:%M')} → {exit_time.strftime('%H:%M')} ({duration_str})", 
+                                 className="text-muted small")
+                    ], className="mb-1"),
+                ], width=5),
+                dbc.Col([
+                    html.Div([
+                        html.Span(f"₹{entry_price:.2f} → ₹{exit_price:.2f}", className="text-light small")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span(f"{reason}", className="badge bg-secondary small")
+                    ], className="mb-1"),
+                ], width=4),
+                dbc.Col([
+                    html.Div([
+                        html.Span(f"₹{pnl:.2f}", className=f"{pnl_color}")
+                    ], className="mb-1"),
+                    html.Div([
+                        html.Span(f"{pnl_pct:.2f}%", className=f"{pnl_color} small")
+                    ], className="mb-1"),
+                ], width=3)
+            ])
+        ], className="p-2")
+    ], style=custom_css["card_alt"], className="mb-2 trade-history-item")
+
+def create_news_item(news):
+    """Create an item for a news feed."""
+    title = news.get('title', '')
+    source = news.get('source', 'Unknown')
+    timestamp = news.get('timestamp', datetime.now())
+    url = news.get('url', '#')
+    
+    # Format timestamp
+    time_str = timestamp.strftime('%H:%M') if isinstance(timestamp, datetime) else timestamp
+    
+    # Calculate how recent the news is
+    recency = None
+    if isinstance(timestamp, datetime):
+        recency = (datetime.now() - timestamp).total_seconds() / 60  # in minutes
+    
+    # Determine if news is recent (less than 30 minutes old)
+    is_recent = recency is not None and recency < 30
+    recency_badge = html.Span("NEW", className="badge bg-danger ms-2") if is_recent else ""
+    
+    return dbc.Card([
+        dbc.CardBody([
+            html.Div([
+                html.A(title, href=url, target="_blank", className="text-light text-decoration-none"),
+                recency_badge
+            ], className="mb-1"),
+            html.Div([
+                html.Span(source, className="badge bg-secondary me-2"),
+                html.Span(time_str, className="text-muted small")
+            ])
+        ], className="p-2")
+    ], style=custom_css["card_alt"], className="mb-2 news-item")
+
+# Define the layout of the app
+app.layout = html.Div([
+    dbc.Container([
+        # Header
+        html.Div([
+            html.H2("Options Trading Dashboard", className="text-light mb-0"),
+            html.P("Real-time market analysis and automated trading signals", className="text-muted")
+        ], className="py-3 mb-3"),
+        
+        # Main content
+        dbc.Row([
+            # Left Column
+            dbc.Col([
+                create_broker_connection_card(),
+                create_trade_control_card(),
+                create_stock_control_card(),
+                create_performance_card(),
+                create_market_overview_card(),
+            ], md=4),
+            
+            # Center Column
+            dbc.Col([
+                # Stocks Container
+                html.Div(id="stocks-container", className="stocks-container"),
+            ], md=5),
+            
+            # Right Column
+            dbc.Col([
+                create_active_trades_card(),
+                create_trade_history_card(),
+                create_news_card(),
+            ], md=3),
+        ]),
+    ], fluid=True, className="px-4"),
+    
+    # Notification area
+    create_notification_container(),
+    
+    # Interval for updating data
+    dcc.Interval(
+        id='update-interval',
+        interval=1000,  # Update every 1 second
+        n_intervals=0
+    ),
+    
+    # Store components for holding data across callbacks
+    dcc.Store(id='stocks-data-store'),
+    dcc.Store(id='options-data-store'),
+    dcc.Store(id='trading-state-store'),
+    dcc.Store(id='pcr-data-store'),
+    dcc.Store(id='news-data-store'),
+    dcc.Store(id='last-update-store'),
+], style={"backgroundColor": COLOR_SCHEME["bg_dark"], "minHeight": "100vh"})
+
+# ============ UI Callbacks ============
+# Callback to add stock
+@app.callback(
+    [Output("add-stock-message", "children"),
+     Output("add-stock-symbol", "value")],
+    [Input("add-stock-button", "n_clicks")],
+    [State("add-stock-symbol", "value"),
+     State("add-stock-type", "value")]
+)
+def add_stock_callback(n_clicks, symbol, stock_type):
+    if not n_clicks or not symbol:
+        return "", None
+    
+    symbol = symbol.upper().strip()
+    
+    # Check if symbol already exists
+    with stocks_data_lock:
+        if symbol in stocks_data:
+            return html.Span(f"Symbol {symbol} already exists", className="text-warning"), symbol
+    
+    # Try to add the stock
+    stock_data = search_stock_in_csv(symbol)
+    if stock_data:
+        success = add_stock_from_csv_data(stock_data)
+    else:
+        success = add_stock(symbol, None, "NSE", stock_type)
+    
+    if success:
+        # Try to fetch data if broker connected
+        if broker_connected:
+            fetch_stock_data(symbol)
+        
+        return html.Span(f"Added {symbol} successfully", className="text-success"), ""
+    else:
+        return html.Span(f"Failed to add {symbol}", className="text-danger"), symbol
+
+# Callback to remove stock
+@app.callback(
+    Output({"type": "remove-stock-btn", "index": MATCH}, "disabled"),
+    Input({"type": "remove-stock-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "remove-stock-btn", "index": MATCH}, "id")
+)
+def remove_stock_callback(n_clicks, id_dict):
+    if not n_clicks:
+        return False
+    
+    symbol = id_dict["index"]
+    success = remove_stock(symbol)
+    
+    # Return True to disable the button after removal
+    return success
+
+# Callback to search stocks while typing
+@app.callback(
+    [Output("search-results", "children"),
+     Output("search-results", "className"),
+     Output("search-status", "children")],
+    [Input("add-stock-symbol", "value")],
+    prevent_initial_call=True
+)
+def search_stocks_callback(search_term):
+    if not search_term or len(search_term) < 2:
+        return [], "search-dropdown d-none", ""
+    
+    # Search stocks in CSV
+    search_term = search_term.upper().strip()
+    results = search_stocks_in_csv(search_term, limit=8)
+    
+    if not results:
+        return [], "search-dropdown d-none", html.Span("No matching stocks found", className="text-warning")
+    
+    # Create result items
+    result_items = []
+    for stock in results:
+        symbol = stock.get('symbol', '')
+        name = stock.get('name', '')
+        stock_type = "INDEX" if "NIFTY" in symbol or "SENSEX" in symbol else "STOCK"
+        
+        result_items.append(
+            html.Div(
+                html.Div([
+                    html.Span(symbol, className="text-light"),
+                    html.Span(f" ({stock_type})", className="text-muted small"),
+                    html.Span(f" - {name}", className="text-muted small d-none d-md-inline")
+                ]),
+                className="search-item",
+                id={"type": "search-result-item", "index": symbol}
+            )
+        )
+    
+    search_status = html.Span(f"Found {len(results)} matching stocks", className="text-muted")
+    
+    return result_items, "search-dropdown", search_status
+
+# Callback for search result click
+@app.callback(
+    Output("add-stock-symbol", "value", allow_duplicate=True),
+    Input({"type": "search-result-item", "index": ALL}, "n_clicks"),
+    State({"type": "search-result-item", "index": ALL}, "id"),
+    prevent_initial_call=True
+)
+def search_result_click(n_clicks_list, id_list):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    
+    # Find which item was clicked
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    try:
+        button_id_dict = json.loads(button_id)
+        symbol = button_id_dict["index"]
+        return symbol
+    except:
+        return dash.no_update
+
+# Callback to connect to broker
+@app.callback(
+    [Output("broker-status", "children"),
+     Output("broker-status", "className"),
+     Output("broker-error-message", "children"),
+     Output("connect-broker-button", "disabled"),
+     Output("disconnect-broker-button", "disabled")],
+    [Input("connect-broker-button", "n_clicks"),
+     Input("disconnect-broker-button", "n_clicks"),
+     Input("update-interval", "n_intervals")]
+)
+def broker_connection_callback(connect_clicks, disconnect_clicks, n_intervals):
+    global smart_api, broker_connected, broker_error_message
+    
+    ctx = callback_context
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    
+    if triggered_id == "connect-broker-button" and connect_clicks:
+        connect_to_broker()
+    elif triggered_id == "disconnect-broker-button" and disconnect_clicks:
+        # Disconnect logic
+        smart_api = None
+        broker_connected = False
+        broker_error_message = None
+    
+    # Check connection status
+    status_text = "Connected" if broker_connected else "Disconnected"
+    status_class = "fs-5 text-success" if broker_connected else "fs-5 text-danger"
+    error_message = broker_error_message if broker_error_message else ""
+    
+    return status_text, status_class, error_message, broker_connected, not broker_connected
+
+# Callback to toggle trading strategies
+@app.callback(
+    [Output("toggle-scalp", "value"),
+     Output("toggle-swing", "value"),
+     Output("toggle-momentum", "value"),
+     Output("toggle-news", "value")],
+    [Input("toggle-scalp", "value"),
+     Input("toggle-swing", "value"),
+     Input("toggle-momentum", "value"),
+     Input("toggle-news", "value")]
+)
+def toggle_strategies_callback(scalp, swing, momentum, news):
+    global strategy_settings
+    
+    # Update strategy settings
+    strategy_settings["SCALP_ENABLED"] = scalp
+    strategy_settings["SWING_ENABLED"] = swing
+    strategy_settings["MOMENTUM_ENABLED"] = momentum
+    strategy_settings["NEWS_ENABLED"] = news
+    
+    logger.info(f"Strategy settings updated: {strategy_settings}")
+    
+    return scalp, swing, momentum, news
+
+# Callback to fetch historical data
+@app.callback(
+    Output({"type": "fetch-history-btn", "index": MATCH}, "disabled", allow_duplicate=True),
+    Input({"type": "fetch-history-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "fetch-history-btn", "index": MATCH}, "id"),
+    prevent_initial_call=True
+)
+def fetch_history_callback(n_clicks, id_dict):
+    if not n_clicks:
+        return False
+    
+    symbol = id_dict["index"]
+    success = load_historical_data(symbol, force_refresh=True)
+    
+    # Disable button temporarily to prevent spam clicks
+    return True
+
+# Callback to enable history button after timeout
+@app.callback(
+    Output({"type": "fetch-history-btn", "index": MATCH}, "disabled"),
+    Input("update-interval", "n_intervals"),
+    State({"type": "fetch-history-btn", "index": MATCH}, "disabled"),
+    State({"type": "fetch-history-btn", "index": MATCH}, "id"),
+    prevent_initial_call=True
+)
+def enable_history_button(n_intervals, is_disabled, id_dict):
+    if not is_disabled:
+        return False
+    
+    # Re-enable after checking if history was fetched
+    symbol = id_dict["index"]
+    with stocks_data_lock:
+        if symbol in stocks_data:
+            last_fetch = stocks_data[symbol].get("last_history_fetch")
+            if last_fetch and (datetime.now() - last_fetch).total_seconds() > 5:
+                return False
+    
+    return is_disabled
+
+# Callback to exit a trade
+@app.callback(
+    Output({"type": "exit-trade-btn", "index": MATCH}, "disabled", allow_duplicate=True),
+    Input({"type": "exit-trade-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "exit-trade-btn", "index": MATCH}, "id"),
+    prevent_initial_call=True
+)
+def exit_trade_callback(n_clicks, id_dict):
+    if not n_clicks:
+        return False
+    
+    option_key = id_dict["index"]
+    success = exit_trade(option_key, reason="Manual Exit")
+    
+    # Disable button after exit
+    return True
+
+# Callback to initiate a trade
+@app.callback(
+    Output({"type": "trade-ce-btn", "index": MATCH}, "disabled", allow_duplicate=True),
+    Input({"type": "trade-ce-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "trade-ce-btn", "index": MATCH}, "id"),
+    prevent_initial_call=True
+)
+def trade_ce_callback(n_clicks, id_dict):
+    if not n_clicks or not broker_connected:
+        return False
+    
+    symbol = id_dict["index"]
+    
+    # Find the CE option key for this symbol
+    with stocks_data_lock:
+        if symbol in stocks_data:
+            option_key = stocks_data[symbol].get("primary_ce")
+            if option_key:
+                # Check if already in a trade
+                with trading_state_lock:
+                    is_active = trading_state.active_trades.get(option_key, False)
+                    if is_active:
+                        return True
+                
+                # Determine best strategy for this option
+                with stocks_data_lock:
+                    predicted_strategy = stocks_data[symbol].get("predicted_strategy")
+                
+                strategy_type = predicted_strategy if predicted_strategy else "MANUAL"
+                success = enter_trade(option_key, strategy_type, "MANUAL")
+                
+                # Disable button temporarily to prevent spam clicks
+                return True
+    
+    return False
+
+# Similar callback for PE trades
+@app.callback(
+    Output({"type": "trade-pe-btn", "index": MATCH}, "disabled", allow_duplicate=True),
+    Input({"type": "trade-pe-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "trade-pe-btn", "index": MATCH}, "id"),
+    prevent_initial_call=True
+)
+def trade_pe_callback(n_clicks, id_dict):
+    if not n_clicks or not broker_connected:
+        return False
+    
+    symbol = id_dict["index"]
+    
+    # Find the PE option key for this symbol
+    with stocks_data_lock:
+        if symbol in stocks_data:
+            option_key = stocks_data[symbol].get("primary_pe")
+            if option_key:
+                # Check if already in a trade
+                with trading_state_lock:
+                    is_active = trading_state.active_trades.get(option_key, False)
+                    if is_active:
+                        return True
+                
+                # Determine best strategy for this option
+                with stocks_data_lock:
+                    predicted_strategy = stocks_data[symbol].get("predicted_strategy")
+                
+                strategy_type = predicted_strategy if predicted_strategy else "MANUAL"
+                success = enter_trade(option_key, strategy_type, "MANUAL")
+                
+                # Disable button temporarily to prevent spam clicks
+                return True
+    
+    return False
+
+# Callback to re-enable trade buttons after timeout
+@app.callback(
+    [Output({"type": "trade-ce-btn", "index": MATCH}, "disabled"),
+     Output({"type": "trade-pe-btn", "index": MATCH}, "disabled")],
+    Input("update-interval", "n_intervals"),
+    [State({"type": "trade-ce-btn", "index": MATCH}, "disabled"),
+     State({"type": "trade-pe-btn", "index": MATCH}, "disabled"),
+     State({"type": "trade-ce-btn", "index": MATCH}, "id")]
+)
+def enable_trade_buttons(n_intervals, ce_disabled, pe_disabled, id_dict):
+    if not ce_disabled and not pe_disabled:
+        return False, False
+    
+    # Re-enable after checking if not in a trade
+    symbol = id_dict["index"]
+    
+    with stocks_data_lock:
+        if symbol in stocks_data:
+            ce_key = stocks_data[symbol].get("primary_ce")
+            pe_key = stocks_data[symbol].get("primary_pe")
+            
+            ce_is_active = False
+            pe_is_active = False
+            
+            with trading_state_lock:
+                if ce_key:
+                    ce_is_active = trading_state.active_trades.get(ce_key, False)
+                if pe_key:
+                    pe_is_active = trading_state.active_trades.get(pe_key, False)
+            
+            return ce_is_active or not broker_connected, pe_is_active or not broker_connected
+    
+    return not broker_connected, not broker_connected
+
+# Main callback to update all stock cards in the UI
+@app.callback(
+    Output("stocks-container", "children"),
+    [Input("update-interval", "n_intervals"),
+     Input("stocks-data-store", "data")]
+)
+def update_stocks_container(n_intervals, stocks_data_json):
+    # Get the list of stocks
+    with stocks_data_lock:
+        stock_symbols = list(stocks_data.keys())
+    
+    # Create a card for each stock
+    stock_cards = [create_stock_option_card(symbol) for symbol in stock_symbols]
+    
+    if not stock_cards:
+        return html.Div(
+            html.P("Add stocks above to start monitoring...", className="text-center text-muted mt-4"),
+            className="text-center"
+        )
+    
+    return stock_cards
+
+# Callback to update the active trades container
+@app.callback(
+    [Output("active-trades-container", "children"),
+     Output("active-trades-count", "children")],
+    [Input("update-interval", "n_intervals"),
+     Input("trading-state-store", "data")]
+)
+def update_active_trades_container(n_intervals, trading_state_json):
+    # Get active trades
+    with trading_state_lock:
+        active_trades = [key for key, is_active in trading_state.active_trades.items() if is_active]
+    
+    # Create a card for each active trade
+    active_trade_cards = [create_active_trade_item(option_key) for option_key in active_trades]
+    active_count = len(active_trades)
+    
+    if not active_trade_cards:
+        return html.Div(
+            html.P("No active trades", className="text-center text-muted mt-3"),
+            className="text-center"
+        ), "0"
+    
+    return active_trade_cards, str(active_count)
+
+# Callback to update the trade history container
+@app.callback(
+    [Output("trade-history-container", "children"),
+     Output("trade-history-count", "children")],
+    [Input("update-interval", "n_intervals"),
+     Input("trading-state-store", "data")]
+)
+def update_trade_history_container(n_intervals, trading_state_json):
+    # Get trade history
+    with trading_state_lock:
+        # Get most recent 10 trades
+        trade_history = trading_state.trades_history[-10:] if trading_state.trades_history else []
+    
+    # Create a card for each historical trade
+    trade_history_cards = [create_trade_history_item(trade) for trade in reversed(trade_history)]
+    history_count = len(trading_state.trades_history)
+    
+    if not trade_history_cards:
+        return html.Div(
+            html.P("No trade history", className="text-center text-muted mt-3"),
+            className="text-center"
+        ), "0"
+    
+    return trade_history_cards, str(history_count)
+
+# Callback to update the news container
+@app.callback(
+    [Output("news-container", "children"),
+     Output("news-count", "children")],
+    [Input("update-interval", "n_intervals"),
+     Input("news-data-store", "data")]
+)
+def update_news_container(n_intervals, news_data_json):
+    # Get news items
+    news_items = news_data.get("items", [])
+    
+    # Create an item for each news
+    news_cards = [create_news_item(news) for news in news_items[:10]]  # Show only 10 most recent
+    news_count = len(news_items)
+    
+    if not news_cards:
+        return html.Div(
+            html.P("No recent news", className="text-center text-muted mt-3"),
+            className="text-center"
+        ), "0"
+    
+    return news_cards, str(news_count)
+
+# Callback to update performance metrics
+@app.callback(
+    [Output("total-pnl", "children"),
+     Output("total-pnl", "className"),
+     Output("daily-pnl", "children"),
+     Output("daily-pnl", "className"),
+     Output("win-rate", "children"),
+     Output("win-loss-ratio", "children"),
+     Output("avg-win", "children"),
+     Output("avg-loss", "children"),
+     Output("trades-today-display", "children"),
+     Output("max-trades-display", "children")],
+    [Input("update-interval", "n_intervals"),
+     Input("trading-state-store", "data")]
+)
+def update_performance_metrics(n_intervals, trading_state_json):
+    with trading_state_lock:
+        total_pnl = trading_state.total_pnl
+        daily_pnl = trading_state.daily_pnl
+        trades_today = trading_state.trades_today
+        wins = trading_state.wins
+        losses = trading_state.losses
+        trade_history = trading_state.trades_history
+    
+    # Calculate win rate
+    total_trades = wins + losses
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+    win_loss_ratio = f"{wins}/{losses}" if losses > 0 else f"{wins}/0"
+    
+    # Calculate average win and loss
+    win_trades = [trade['pnl'] for trade in trade_history if trade['pnl'] > 0]
+    loss_trades = [trade['pnl'] for trade in trade_history if trade['pnl'] < 0]
+    
+    avg_win = sum(win_trades) / len(win_trades) if win_trades else 0
+    avg_loss = sum(loss_trades) / len(loss_trades) if loss_trades else 0
+    
+    # Format outputs
+    total_pnl_str = f"₹{total_pnl:.2f}"
+    daily_pnl_str = f"₹{daily_pnl:.2f}"
+    win_rate_str = f"{win_rate:.1f}%"
+    avg_win_str = f"₹{avg_win:.2f}" if avg_win else "N/A"
+    avg_loss_str = f"₹{avg_loss:.2f}" if avg_loss else "N/A"
+    
+    # Define classes
+    total_pnl_class = "fs-4 text-success dynamic-update value-update" if total_pnl >= 0 else "fs-4 text-danger dynamic-update value-update"
+    daily_pnl_class = "fs-5 text-success dynamic-update value-update" if daily_pnl >= 0 else "fs-5 text-danger dynamic-update value-update"
+    
+    return (
+        total_pnl_str, total_pnl_class,
+        daily_pnl_str, daily_pnl_class,
+        win_rate_str, win_loss_ratio,
+        avg_win_str, avg_loss_str,
+        str(trades_today), str(MAX_TRADES_PER_DAY)
+    )
+
+# Callback to update market overview
+@app.callback(
+    [Output("overall-sentiment", "children"),
+     Output("overall-sentiment", "className"),
+     Output("active-signals-count", "children"),
+     Output("system-health", "children"),
+     Output("system-health", "className"),
+     Output("last-update-time", "children")],
+    [Input("update-interval", "n_intervals")]
+)
+def update_market_overview(n_intervals):
+    # Get overall sentiment
+    overall_sentiment = market_sentiment.get("overall", "NEUTRAL")
+    
+    # Set sentiment badge color
+    sentiment_class = "badge "
+    if "BULLISH" in overall_sentiment:
+        sentiment_class += "bg-success"
+    elif "BEARISH" in overall_sentiment:
+        sentiment_class += "bg-danger"
+    else:
+        sentiment_class += "bg-secondary"
+    
+    # Count active signals
+    active_signals = 0
+    with options_data_lock:
+        for option_info in options_data.values():
+            signal = option_info.get("signal", 0)
+            strength = option_info.get("strength", 0)
+            if abs(signal) > 2 and strength > 5:
+                active_signals += 1
+    
+    # Check system health
+    health = check_system_health()
+    health_status = health["status"]
+    
+    # Set health badge color
+    health_class = "badge "
+    if health_status == "healthy":
+        health_class += "bg-success"
+    elif health_status == "degraded":
+        health_class += "bg-warning"
+    else:
+        health_class += "bg-danger"
+    
+    # Get current time
+    current_time = datetime.now().strftime("%H:%M:%S")
+    
+    return (
+        overall_sentiment, sentiment_class,
+        str(active_signals),
+        health_status.title(), health_class,
+        current_time
+    )
+
+# Dynamic callbacks to update each stock's data in real-time
+@app.callback(
+    [Output({"type": "stock-price", "index": MATCH}, "children"),
+     Output({"type": "stock-price", "index": MATCH}, "className"),
+     Output({"type": "stock-change", "index": MATCH}, "children"),
+     Output({"type": "stock-change", "index": MATCH}, "className"),
+     Output({"type": "stock-ohlc", "index": MATCH}, "children"),
+     Output({"type": "stock-pcr", "index": MATCH}, "children"),
+     Output({"type": "pcr-strength", "index": MATCH}, "children"),
+     Output({"type": "stock-sentiment", "index": MATCH}, "children"),
+     Output({"type": "stock-sentiment", "index": MATCH}, "className"),
+     Output({"type": "stock-sr-levels", "index": MATCH}, "children"),
+     Output({"type": "stock-volatility", "index": MATCH}, "children"),
+     Output({"type": "stock-signal", "index": MATCH}, "children"),
+     Output({"type": "stock-signal", "index": MATCH}, "className"),
+     Output({"type": "stock-last-update", "index": MATCH}, "children"),
+     Output({"type": "data-source-badge", "index": MATCH}, "children"),
+     Output({"type": "data-source-badge", "index": MATCH}, "className")],
+    [Input("update-interval", "n_intervals")],
+    [State({"type": "stock-price", "index": MATCH}, "id")]
+)
+def update_stock_data(n_intervals, id_dict):
+    symbol = id_dict["index"]
+    
+    # Check if the stock exists
+    with stocks_data_lock:
+        if symbol not in stocks_data:
+            # Return default values if stock doesn't exist
+            return (
+                "N/A", "fs-4 text-light dynamic-update price-element",
+                "N/A", "text-light dynamic-update price-element",
+                "N/A", "N/A", "", "NEUTRAL", "badge bg-secondary",
+                "N/A", "N/A", "NEUTRAL", "badge bg-secondary",
+                "N/A", "Unknown", "badge bg-secondary ms-2"
+            )
+        
+        # Get stock data
+        stock_info = stocks_data[symbol]
+        price = stock_info.get("ltp")
+        change = stock_info.get("change_percent")
+        open_price = stock_info.get("open")
+        high_price = stock_info.get("high")
+        low_price = stock_info.get("low")
+        prev_close = stock_info.get("previous")
+        last_updated = stock_info.get("last_updated")
+        data_source = stock_info.get("data_source", "unknown")
+        support_levels = stock_info.get("support_levels", [])
+        resistance_levels = stock_info.get("resistance_levels", [])
+    
+    # Get PCR data
+    with pcr_data_lock:
+        pcr_value = pcr_data.get(symbol, {}).get("current", 1.0)
+        pcr_trend = pcr_data.get(symbol, {}).get("trend", "NEUTRAL")
+        pcr_strength = pcr_data.get(symbol, {}).get("strength", 0.0)
+    
+    # Get sentiment
+    sentiment = market_sentiment.get(symbol, "NEUTRAL")
+    
+    # Calculate volatility
+    volatility = calculate_volatility(symbol)
+    
+    # Determine signal based on sentiment and PCR
+    signal, signal_class = get_pcr_signal(symbol)
+    
+    # Format outputs
+    price_str = f"₹{price:.2f}" if price is not None else "N/A"
+    change_str = f"{change:.2f}%" if change is not None else "N/A"
+    ohlc_str = f"O: {open_price:.2f} H: {high_price:.2f} L: {low_price:.2f} P: {prev_close:.2f}" if all(x is not None for x in [open_price, high_price, low_price, prev_close]) else "N/A"
+    pcr_str = f"{pcr_value:.2f}" if pcr_value is not None else "N/A"
+    
+    # Format support/resistance levels
+    sr_levels_str = ""
+    if support_levels:
+        sr_levels_str += f"S: {', '.join([str(round(level, 1)) for level in support_levels[:2]])}"
+    if resistance_levels:
+        sr_levels_str += f" R: {', '.join([str(round(level, 1)) for level in resistance_levels[:2]])}"
+    if not sr_levels_str:
+        sr_levels_str = "N/A"
+    
+    volatility_str = f"{volatility:.2f}" if volatility is not None else "N/A"
+    last_update_str = last_updated.strftime("%H:%M:%S") if last_updated else "N/A"
+    
+    # Format PCR strength
+    pcr_strength_str = ""
+    if pcr_strength > 0.2:
+        pcr_strength_str = "↓ Bullish" if pcr_strength > 0 else "↑ Bearish"
+    
+    # Determine class for price and change
+    price_class = "fs-4 text-light dynamic-update price-element"
+    change_class = "text-success dynamic-update price-element" if change and change >= 0 else "text-danger dynamic-update price-element"
+    
+    # Determine sentiment badge
+    sentiment_class = "badge "
+    if "BULLISH" in sentiment:
+        sentiment_class += "bg-success"
+    elif "BEARISH" in sentiment:
+        sentiment_class += "bg-danger"
+    elif "MODERATELY BULLISH" in sentiment:
+        sentiment_class += "bg-success bg-opacity-50"
+    elif "MODERATELY BEARISH" in sentiment:
+        sentiment_class += "bg-danger bg-opacity-50"
+    else:
+        sentiment_class += "bg-secondary"
+    
+    # Determine data source badge
+    data_source_badge = data_source.title()
+    data_source_class = "badge ms-2 "
+    if data_source == "broker":
+        data_source_class += "bg-success"
+    elif data_source == "yahoo":
+        data_source_class += "bg-primary"
+    elif data_source == "fallback":
+        data_source_class += "bg-warning"
+    else:
+        data_source_class += "bg-secondary"
+    
+    return (
+        price_str, price_class,
+        change_str, change_class,
+        ohlc_str,
+        pcr_str, pcr_strength_str,
+        sentiment, sentiment_class,
+        sr_levels_str,
+        volatility_str,
+        signal, signal_class,
+        last_update_str,
+        data_source_badge, data_source_class
+    )
+
+# Callback to update option data for a stock
+@app.callback(
+    [Output({"type": "ce-strike", "index": MATCH}, "children"),
+     Output({"type": "ce-price", "index": MATCH}, "children"),
+     Output({"type": "ce-price", "index": MATCH}, "className"),
+     Output({"type": "ce-signal", "index": MATCH}, "children"),
+     Output({"type": "ce-signal", "index": MATCH}, "className"),
+     Output({"type": "ce-strength", "index": MATCH}, "value"),
+     Output({"type": "ce-strength", "index": MATCH}, "color"),
+     Output({"type": "pe-strike", "index": MATCH}, "children"),
+     Output({"type": "pe-price", "index": MATCH}, "children"),
+     Output({"type": "pe-price", "index": MATCH}, "className"),
+     Output({"type": "pe-signal", "index": MATCH}, "children"),
+     Output({"type": "pe-signal", "index": MATCH}, "className"),
+     Output({"type": "pe-strength", "index": MATCH}, "value"),
+     Output({"type": "pe-strength", "index": MATCH}, "color")],
+    [Input("update-interval", "n_intervals")],
+    [State({"type": "ce-strike", "index": MATCH}, "id")]
+)
+def update_option_data(n_intervals, id_dict):
+    symbol = id_dict["index"]
+    
+    # Check if the stock exists
+    with stocks_data_lock:
+        if symbol not in stocks_data:
+            # Return default values if stock doesn't exist
+            return (
+                "N/A", "N/A", "fs-5 text-light dynamic-update price-element",
+                "NEUTRAL", "badge bg-secondary", 0, "primary",
+                "N/A", "N/A", "fs-5 text-light dynamic-update price-element",
+                "NEUTRAL", "badge bg-secondary", 0, "primary"
+            )
+        
+        # Get option keys
+        ce_key = stocks_data[symbol].get("primary_ce")
+        pe_key = stocks_data[symbol].get("primary_pe")
+    
+    # CE option data
+    ce_strike, ce_price, ce_price_class = "N/A", "N/A", "fs-5 text-light dynamic-update price-element"
+    ce_signal, ce_signal_class, ce_strength, ce_strength_color = "NEUTRAL", "badge bg-secondary", 0, "primary"
+    
+    if ce_key and ce_key in options_data:
+        with options_data_lock:
+            ce_info = options_data[ce_key]
+            ce_strike = ce_info.get("strike", "N/A")
+            ce_price = ce_info.get("ltp")
+            ce_signal_val = ce_info.get("signal", 0)
+            ce_strength_val = ce_info.get("strength", 0)
+            ce_trend = ce_info.get("trend", "NEUTRAL")
+            ce_using_fallback = ce_info.get("using_fallback", False)
+        
+        # Format CE data
+        ce_strike = f"Strike: {ce_strike}"
+        ce_price = f"₹{ce_price:.2f}" if ce_price is not None else "N/A"
+        ce_price_class = "fs-5 text-light dynamic-update price-element"
+        if ce_using_fallback:
+            ce_price_class += " text-opacity-50"  # Dim the price if using fallback data
+        
+        ce_signal = ce_trend
+        ce_signal_class = "badge "
+        if "BULLISH" in ce_trend:
+            ce_signal_class += "bg-success badge-transition"
+            ce_strength_color = "success"
+        elif "BEARISH" in ce_trend:
+            ce_signal_class += "bg-danger badge-transition"
+            ce_strength_color = "danger"
+        else:
+            ce_signal_class += "bg-secondary badge-transition"
+            ce_strength_color = "primary"
+        
+        ce_strength = min(ce_strength_val * 10, 100)  # Convert 0-10 scale to 0-100 for progress bar
+    
+    # PE option data
+    pe_strike, pe_price, pe_price_class = "N/A", "N/A", "fs-5 text-light dynamic-update price-element"
+    pe_signal, pe_signal_class, pe_strength, pe_strength_color = "NEUTRAL", "badge bg-secondary", 0, "primary"
+    
+    if pe_key and pe_key in options_data:
+        with options_data_lock:
+            pe_info = options_data[pe_key]
+            pe_strike = pe_info.get("strike", "N/A")
+            pe_price = pe_info.get("ltp")
+            pe_signal_val = pe_info.get("signal", 0)
+            pe_strength_val = pe_info.get("strength", 0)
+            pe_trend = pe_info.get("trend", "NEUTRAL")
+            pe_using_fallback = pe_info.get("using_fallback", False)
+        
+        # Format PE data
+        pe_strike = f"Strike: {pe_strike}"
+        pe_price = f"₹{pe_price:.2f}" if pe_price is not None else "N/A"
+        pe_price_class = "fs-5 text-light dynamic-update price-element"
+        if pe_using_fallback:
+            pe_price_class += " text-opacity-50"  # Dim the price if using fallback data
+        
+        pe_signal = pe_trend
+        pe_signal_class = "badge "
+        if "BULLISH" in pe_trend:
+            pe_signal_class += "bg-success badge-transition"
+            pe_strength_color = "success"
+        elif "BEARISH" in pe_trend:
+            pe_signal_class += "bg-danger badge-transition"
+            pe_strength_color = "danger"
+        else:
+            pe_signal_class += "bg-secondary badge-transition"
+            pe_strength_color = "primary"
+        
+        pe_strength = min(pe_strength_val * 10, 100)  # Convert 0-10 scale to 0-100 for progress bar
+    
+    return (
+        ce_strike, ce_price, ce_price_class,
+        ce_signal, ce_signal_class, ce_strength, ce_strength_color,
+        pe_strike, pe_price, pe_price_class,
+        pe_signal, pe_signal_class, pe_strength, pe_strength_color
+    )
+
+# Callback to update active trade details
+@app.callback(
+    [Output({"type": "trade-duration", "index": MATCH}, "children"),
+     Output({"type": "trade-current", "index": MATCH}, "children"),
+     Output({"type": "trade-pnl", "index": MATCH}, "children"),
+     Output({"type": "trade-pnl", "index": MATCH}, "className")],
+    [Input("update-interval", "n_intervals")],
+    [State({"type": "trade-duration", "index": MATCH}, "id")]
+)
+def update_active_trade_details(n_intervals, id_dict):
+    option_key = id_dict["index"]
+    
+    # Check if the trade is active
+    with trading_state_lock:
+        is_active = trading_state.active_trades.get(option_key, False)
+        if not is_active:
+            return "N/A", "N/A", "N/A", "small dynamic-update"
+        
+        entry_price = trading_state.entry_price.get(option_key, 0)
+        entry_time = trading_state.entry_time.get(option_key, datetime.now())
+        quantity = trading_state.quantity.get(option_key, 0)
+    
+    # Get current price
+    with options_data_lock:
+        if option_key not in options_data:
+            return "N/A", "N/A", "N/A", "small dynamic-update"
+        
+        option_info = options_data[option_key]
+        current_price = option_info.get("ltp", 0)
+        option_type = option_info.get("option_type", "")
+    
+    # Calculate duration
+    current_time = datetime.now()
+    duration = (current_time - entry_time).total_seconds() if entry_time else 0
+    duration_str = f"{duration / 60:.1f}min"
+    
+    # Calculate P&L
+    if option_type == "CE":
+        pnl = (current_price - entry_price) * quantity
+        pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+    else:  # PE
+        pnl = (entry_price - current_price) * quantity
+        pnl_pct = ((entry_price / current_price) - 1) * 100 if current_price > 0 else 0
+    
+    current_str = f"₹{current_price:.2f}"
+    pnl_str = f"₹{pnl:.2f} ({pnl_pct:.1f}%)"
+    
+    # Determine P&L class
+    pnl_class = "small text-success dynamic-update" if pnl >= 0 else "small text-danger dynamic-update"
+    
+    return duration_str, current_str, pnl_str, pnl_class
+
+# Callback to update the data stores
+@app.callback(
+    [Output("stocks-data-store", "data"),
+     Output("options-data-store", "data"),
+     Output("trading-state-store", "data"),
+     Output("pcr-data-store", "data"),
+     Output("news-data-store", "data"),
+     Output("last-update-store", "data")],
+    Input("update-interval", "n_intervals")
+)
+def update_data_stores(n_intervals):
+    # Convert data structures to JSON-serializable format
+    stocks_data_json = {}
+    with stocks_data_lock:
+        for symbol, data in stocks_data.items():
+            stocks_data_json[symbol] = {
+                "ltp": data.get("ltp"),
+                "change_percent": data.get("change_percent"),
+                "primary_ce": data.get("primary_ce"),
+                "primary_pe": data.get("primary_pe"),
+                "predicted_strategy": data.get("predicted_strategy"),
+                "strategy_confidence": data.get("strategy_confidence"),
+                "last_updated": data.get("last_updated").isoformat() if data.get("last_updated") else None
+            }
+    
+    options_data_json = {}
+    with options_data_lock:
+        for key, data in options_data.items():
+            options_data_json[key] = {
+                "ltp": data.get("ltp"),
+                "signal": data.get("signal"),
+                "strength": data.get("strength"),
+                "trend": data.get("trend"),
+                "using_fallback": data.get("using_fallback", False)
+            }
+    
+    trading_state_json = {}
+    with trading_state_lock:
+        trading_state_json = {
+            "active_trades": trading_state.active_trades,
+            "total_pnl": trading_state.total_pnl,
+            "daily_pnl": trading_state.daily_pnl,
+            "trades_today": trading_state.trades_today,
+            "wins": trading_state.wins,
+            "losses": trading_state.losses,
+            "trades_history": len(trading_state.trades_history)
+        }
+    
+    pcr_data_json = {}
+    with pcr_data_lock:
+        for symbol, data in pcr_data.items():
+            pcr_data_json[symbol] = {
+                "current": data.get("current"),
+                "trend": data.get("trend"),
+                "strength": data.get("strength")
+            }
+    
+    news_data_json = {
+        "count": len(news_data.get("items", [])),
+        "last_updated": news_data.get("last_updated").isoformat() if news_data.get("last_updated") else None
+    }
+    
+    last_update_json = {
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    return stocks_data_json, options_data_json, trading_state_json, pcr_data_json, news_data_json, last_update_json
+
+# Callback for showing notifications
+@app.callback(
+    [Output("notification-toast", "is_open"),
+     Output("notification-toast", "header"),
+     Output("notification-toast", "children"),
+     Output("notification-toast", "icon")],
+    [Input("trading-state-store", "data")]
+)
+def show_trade_notifications(trading_state_json):
+    # Check if there are new trades
+    if not hasattr(show_trade_notifications, "prev_trade_count"):
+        show_trade_notifications.prev_trade_count = 0
+    
+    current_trade_count = trading_state_json.get("trades_history", 0)
+    
+    if current_trade_count > show_trade_notifications.prev_trade_count:
+        # New trade executed, show notification
+        with trading_state_lock:
+            if trading_state.trades_history:
+                latest_trade = trading_state.trades_history[-1]
+                
+                # Get trade details
+                symbol = latest_trade.get("parent_symbol", "")
+                option_type = latest_trade.get("option_type", "")
+                pnl = latest_trade.get("pnl", 0)
+                reason = latest_trade.get("reason", "")
+                
+                # Create notification
+                header = "Trade Completed"
+                message = f"{symbol} {option_type} trade exited: ₹{pnl:.2f} ({reason})"
+                icon = "success" if pnl > 0 else "danger"
+                
+                # Update previous count
+                show_trade_notifications.prev_trade_count = current_trade_count
+                
+                return True, header, message, icon
+    
+    # Check for new active trades
+    if not hasattr(show_trade_notifications, "prev_active_count"):
+        show_trade_notifications.prev_active_count = 0
+    
+    current_active_count = sum(1 for v in trading_state.active_trades.values() if v)
+    
+    if current_active_count > show_trade_notifications.prev_active_count:
+        # New trade entered, show notification
+        with trading_state_lock:
+            # Find the new active trade
+            for option_key, is_active in trading_state.active_trades.items():
+                if is_active:
+                    with options_data_lock:
+                        if option_key in options_data:
+                            parent_symbol = options_data[option_key].get("parent_symbol", "")
+                            option_type = options_data[option_key].get("option_type", "")
+                            
+                            # Create notification
+                            header = "Trade Initiated"
+                            message = f"Entered new {parent_symbol} {option_type} trade"
+                            icon = "primary"
+                            
+                            # Update previous count
+                            show_trade_notifications.prev_active_count = current_active_count
+                            
+                            return True, header, message, icon
+    
+    # If no new trades, don't show notification
+    show_trade_notifications.prev_trade_count = current_trade_count
+    show_trade_notifications.prev_active_count = current_active_count
+    return False, "", "", "primary"
+
+# ============ Data Thread Functions ============
+def data_thread_function():
+    """Main thread function for data collection and trading."""
+    global data_thread_started, dashboard_initialized
+    
+    data_thread_started = True
+    logger.info("Data thread started")
+    
+    # Initialize state
+    initialize_from_csv()
+    dashboard_initialized = True
+    
+    # Slow startup to allow the dashboard to load
+    time.sleep(3)
+    
+    # Main loop
+    try:
+        iteration = 0
+        while True:
+            try:
+                # Try to connect to broker if not already connected
+                if not broker_connected:
+                    connect_to_broker_with_backoff()
+                
+                # Check for day rollover
+                check_day_rollover()
+                
+                # Fetch data if broker is connected
+                if broker_connected:
+                    # Fetch stock and option data
+                    update_all_data_comprehensive()
+                    
+                    # Update PCR data periodically
+                    if iteration % 30 == 0:  # Every 30 seconds
+                        update_all_pcr_data()
+                    
+                    # Update market sentiment periodically
+                    if iteration % 60 == 0:  # Every minute
+                        update_market_sentiment()
+                    
+                    # Update option selection periodically
+                    if iteration % 600 == 0:  # Every 10 minutes
+                        update_option_selection()
+                    
+                    # Check for new news periodically
+                    if iteration % 30 == 0:  # Every 30 seconds
+                        update_news_data()
+                    
+                    # Run cleanup periodically
+                    if iteration % 600 == 0:  # Every 10 minutes
+                        cleanup_old_data()
+                        cleanup_inactive_stocks()
+                    
+                    # Apply trading strategy
+                    apply_trading_strategy()
+                
+                # Increment iteration counter
+                iteration += 1
+                if iteration > 10000:  # Prevent integer overflow
+                    iteration = 0
+                
+                # Sleep to prevent excessive CPU usage
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Error in data thread: {e}", exc_info=True)
+                time.sleep(5)  # Sleep longer on error
+    
+    except KeyboardInterrupt:
+        logger.info("Data thread stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error in data thread: {e}", exc_info=True)
+    finally:
+        data_thread_started = False
+        logger.info("Data thread stopped")
+
+# ============ Main ============
+if __name__ == "__main__":
+    logger.info("Starting Options Trading Dashboard")
+    
+    # Start the data thread
+    data_thread = threading.Thread(target=data_thread_function, daemon=True)
+    data_thread.start()
+    
+    # Start the Dash app
+    app.run_server(debug=True, use_reloader=False, port=8050)
