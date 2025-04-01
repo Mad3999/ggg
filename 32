@@ -6038,7 +6038,76 @@ app_css = '''
     transition: all 0.5s ease;
     transition-delay: 0.1s;
 }
+/* Base transitions for all updating elements */
+.smooth-transition {
+    transition: all 0.7s ease-in-out;
+}
 
+/* Price value transitions with flash animations */
+.price-value {
+    position: relative;
+    transition: color 0.5s ease-out, background-color 0.5s ease-out;
+    border-radius: 4px;
+    will-change: color, background-color;
+}
+
+.price-change {
+    transition: color 0.6s ease-out;
+    will-change: color;
+}
+
+/* Flash animations for price changes */
+@keyframes flash-green {
+    0% { background-color: rgba(40, 167, 69, 0); }
+    20% { background-color: rgba(40, 167, 69, 0.3); }
+    100% { background-color: rgba(40, 167, 69, 0); }
+}
+
+@keyframes flash-red {
+    0% { background-color: rgba(220, 53, 69, 0); }
+    20% { background-color: rgba(220, 53, 69, 0.3); }
+    100% { background-color: rgba(220, 53, 69, 0); }
+}
+
+.highlight-positive {
+    animation: flash-green 2s ease-out;
+}
+
+.highlight-negative {
+    animation: flash-red 2s ease-out;
+}
+
+/* Badge transitions */
+.badge {
+    transition: background-color 0.5s ease-out, opacity 0.5s ease-out;
+}
+
+/* Card and container transitions */
+.card, .card-body {
+    transition: border-color 0.5s ease-out, box-shadow 0.5s ease-out;
+}
+
+/* Progress bar transitions */
+.progress-bar {
+    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Stock card transition when data changes */
+.stock-data-changed {
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+    transition: box-shadow 0.5s ease-out;
+}
+
+/* Reduce animation for users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .smooth-transition, .price-value, .price-change, .badge, .card, .card-body, .progress-bar {
+        transition: none;
+    }
+    
+    .highlight-positive, .highlight-negative {
+        animation: none;
+    }
+}
 /* For numeric values that change frequently */
 .numeric-value {
     transition: color 0.7s ease-in-out, 
@@ -6648,12 +6717,12 @@ def create_layout():
             # Refresh intervals - more efficient refresh rates
             dcc.Interval(
                 id='fast-interval',
-                interval=500,  # 1 second for time-sensitive data
+                interval=1000,  # 1 second for time-sensitive data
                 n_intervals=0
             ),
             dcc.Interval(
                 id='medium-interval',
-                interval=1000,  # 5 seconds for regular updates
+                interval=3000,  # 5 seconds for regular updates
                 n_intervals=0
             ),
             dcc.Interval(
@@ -6672,14 +6741,14 @@ app.layout = create_layout()
 
 
 # ============ Dashboard Callbacks ============
-# Update UI Data Store to centralize data processing
+
 @app.callback(
     Output('ui-data-store', 'data'),
     [Input('fast-interval', 'n_intervals')]
 )
 def update_ui_data_store(n_intervals):
     """Centralized data store updates with throttling to avoid UI blinking"""
-    # Create a static copy of current UI data store to avoid reference issues
+    # Create a deep copy of current UI data to properly compare changes
     current_ui_data = {}
     for key in ui_data_store:
         if isinstance(ui_data_store[key], dict):
@@ -6687,7 +6756,7 @@ def update_ui_data_store(n_intervals):
         else:
             current_ui_data[key] = ui_data_store[key]
     
-    # Create result dictionary
+    # Base structure for result
     result = {
         'connection': {
             'status': 'connected' if broker_connected else 'disconnected',
@@ -6711,7 +6780,7 @@ def update_ui_data_store(n_intervals):
         'strategies': strategy_settings.copy()
     }
     
-    # Process stock data with change detection
+    # Process stock data with advanced change detection
     for symbol in stocks_data:
         stock_info = stocks_data[symbol]
         current_stock_data = current_ui_data.get('stocks', {}).get(symbol, {})
@@ -6721,30 +6790,58 @@ def update_ui_data_store(n_intervals):
         last_updated = stock_info.get("last_updated")
         last_updated_str = last_updated.strftime('%H:%M:%S') if last_updated else 'N/A'
         
-        # Check if data has actually changed
+        # Only update values that have actually changed
+        new_stock_data = {}
+        needs_update = False
+        
+        # Compare LTP for change
         prev_price = current_stock_data.get('price')
-        if prev_price == ltp and current_stock_data.get('last_updated') == last_updated_str:
-            # No change detected, keep previous data to avoid UI updates
-            result['stocks'][symbol] = current_stock_data
-            continue
+        if prev_price != ltp:
+            new_stock_data['price'] = ltp
+            needs_update = True
+            new_stock_data['has_changed'] = True
+            new_stock_data['change_direction'] = 'up' if prev_price is not None and ltp > prev_price else 'down'
+        else:
+            new_stock_data['price'] = prev_price
+            new_stock_data['has_changed'] = False
+            new_stock_data['change_direction'] = current_stock_data.get('change_direction', 'none')
             
-        # Data has changed, include in update
-        result['stocks'][symbol] = {
-            'price': ltp,
-            'change': stock_info.get("change_percent", 0),
-            'ohlc': {
-                'open': stock_info.get("open"),
-                'high': stock_info.get("high"),
-                'low': stock_info.get("low"),
-                'previous': stock_info.get("previous")
-            },
-            'last_updated': last_updated_str,
-            'has_changed': True if prev_price is not None and ltp != prev_price else False,
-            'change_direction': 'up' if prev_price is not None and ltp > prev_price else 
-                               'down' if prev_price is not None and ltp < prev_price else 'none'
+        # Compare other fields for change
+        if current_stock_data.get('change') != stock_info.get("change_percent", 0):
+            new_stock_data['change'] = stock_info.get("change_percent", 0)
+            needs_update = True
+        else:
+            new_stock_data['change'] = current_stock_data.get('change', 0)
+            
+        # Check OHLC data
+        current_ohlc = current_stock_data.get('ohlc', {})
+        new_ohlc = {
+            'open': stock_info.get("open"),
+            'high': stock_info.get("high"),
+            'low': stock_info.get("low"),
+            'previous': stock_info.get("previous")
         }
+        
+        if current_ohlc != new_ohlc:
+            new_stock_data['ohlc'] = new_ohlc
+            needs_update = True
+        else:
+            new_stock_data['ohlc'] = current_ohlc
+            
+        # Check update time
+        if current_stock_data.get('last_updated') != last_updated_str:
+            new_stock_data['last_updated'] = last_updated_str
+            needs_update = True
+        else:
+            new_stock_data['last_updated'] = current_stock_data.get('last_updated')
+        
+        # Only add to result if something changed or it's a new stock
+        if needs_update or symbol not in current_ui_data.get('stocks', {}):
+            result['stocks'][symbol] = new_stock_data
+        else:
+            result['stocks'][symbol] = current_stock_data
     
-    # Process option data with change detection
+    # Process options data with similar change detection
     for symbol in stocks_data:
         result['options'][symbol] = {}
         current_option_data = current_ui_data.get('options', {}).get(symbol, {})
@@ -6759,25 +6856,58 @@ def update_ui_data_store(n_intervals):
             ce_price = ce_option.get("ltp")
             
             # Check if price has changed
+            needs_update = False
+            new_ce_data = {}
             prev_ce_price = current_ce.get('price')
-            if prev_ce_price == ce_price:
-                # No change, keep previous data
-                result['options'][symbol]['ce'] = current_ce
+            
+            if prev_ce_price != ce_price:
+                new_ce_data['price'] = ce_price
+                new_ce_data['has_changed'] = True
+                new_ce_data['change_direction'] = 'up' if prev_ce_price is not None and ce_price > prev_ce_price else 'down'
+                needs_update = True
             else:
-                # Price changed, update data
-                result['options'][symbol]['ce'] = {
-                    'strike': ce_option.get("strike", "N/A"),
-                    'price': ce_price,
-                    'signal': ce_option.get("signal", 0),
-                    'strength': ce_option.get("strength", 0),
-                    'trend': ce_option.get("trend", "NEUTRAL"),
-                    'using_fallback': ce_option.get("using_fallback", False),
-                    'has_changed': True if prev_ce_price is not None else False,
-                    'change_direction': 'up' if prev_ce_price is not None and ce_price > prev_ce_price else 
-                                       'down' if prev_ce_price is not None and ce_price < prev_ce_price else 'none'
-                }
+                new_ce_data['price'] = prev_ce_price
+                new_ce_data['has_changed'] = False
+                new_ce_data['change_direction'] = current_ce.get('change_direction', 'none')
+            
+            # Check other fields
+            if current_ce.get('signal') != ce_option.get('signal', 0):
+                new_ce_data['signal'] = ce_option.get('signal', 0)
+                needs_update = True
+            else:
+                new_ce_data['signal'] = current_ce.get('signal', 0)
+                
+            if current_ce.get('strength') != ce_option.get('strength', 0):
+                new_ce_data['strength'] = ce_option.get('strength', 0)
+                needs_update = True
+            else:
+                new_ce_data['strength'] = current_ce.get('strength', 0)
+                
+            if current_ce.get('trend') != ce_option.get('trend', 'NEUTRAL'):
+                new_ce_data['trend'] = ce_option.get('trend', 'NEUTRAL')
+                needs_update = True
+            else:
+                new_ce_data['trend'] = current_ce.get('trend', 'NEUTRAL')
+                
+            if current_ce.get('using_fallback') != ce_option.get('using_fallback', False):
+                new_ce_data['using_fallback'] = ce_option.get('using_fallback', False)
+                needs_update = True
+            else:
+                new_ce_data['using_fallback'] = current_ce.get('using_fallback', False)
+                
+            if current_ce.get('strike') != ce_option.get('strike', 'N/A'):
+                new_ce_data['strike'] = ce_option.get('strike', 'N/A')
+                needs_update = True
+            else:
+                new_ce_data['strike'] = current_ce.get('strike', 'N/A')
+            
+            # Only update if needed
+            if needs_update or 'ce' not in current_option_data:
+                result['options'][symbol]['ce'] = new_ce_data
+            else:
+                result['options'][symbol]['ce'] = current_ce
         
-        # Process PE options (same logic as CE)
+        # Process PE options with the same approach
         pe_key = stocks_data[symbol].get("primary_pe")
         if pe_key and pe_key in options_data:
             pe_option = options_data[pe_key]
@@ -6787,32 +6917,87 @@ def update_ui_data_store(n_intervals):
             pe_price = pe_option.get("ltp")
             
             # Check if price has changed
+            needs_update = False
+            new_pe_data = {}
             prev_pe_price = current_pe.get('price')
-            if prev_pe_price == pe_price:
-                # No change, keep previous data
-                result['options'][symbol]['pe'] = current_pe
+            
+            if prev_pe_price != pe_price:
+                new_pe_data['price'] = pe_price
+                new_pe_data['has_changed'] = True
+                new_pe_data['change_direction'] = 'up' if prev_pe_price is not None and pe_price > prev_pe_price else 'down'
+                needs_update = True
             else:
-                # Price changed, update data
-                result['options'][symbol]['pe'] = {
-                    'strike': pe_option.get("strike", "N/A"),
-                    'price': pe_price,
-                    'signal': pe_option.get("signal", 0),
-                    'strength': pe_option.get("strength", 0),
-                    'trend': pe_option.get("trend", "NEUTRAL"),
-                    'using_fallback': pe_option.get("using_fallback", False),
-                    'has_changed': True if prev_pe_price is not None else False,
-                    'change_direction': 'up' if prev_pe_price is not None and pe_price > prev_pe_price else 
-                                       'down' if prev_pe_price is not None and pe_price < prev_pe_price else 'none'
-                }
+                new_pe_data['price'] = prev_pe_price
+                new_pe_data['has_changed'] = False
+                new_pe_data['change_direction'] = current_pe.get('change_direction', 'none')
+            
+            # Check other fields
+            if current_pe.get('signal') != pe_option.get('signal', 0):
+                new_pe_data['signal'] = pe_option.get('signal', 0)
+                needs_update = True
+            else:
+                new_pe_data['signal'] = current_pe.get('signal', 0)
+                
+            if current_pe.get('strength') != pe_option.get('strength', 0):
+                new_pe_data['strength'] = pe_option.get('strength', 0)
+                needs_update = True
+            else:
+                new_pe_data['strength'] = current_pe.get('strength', 0)
+                
+            if current_pe.get('trend') != pe_option.get('trend', 'NEUTRAL'):
+                new_pe_data['trend'] = pe_option.get('trend', 'NEUTRAL')
+                needs_update = True
+            else:
+                new_pe_data['trend'] = current_pe.get('trend', 'NEUTRAL')
+                
+            if current_pe.get('using_fallback') != pe_option.get('using_fallback', False):
+                new_pe_data['using_fallback'] = pe_option.get('using_fallback', False)
+                needs_update = True
+            else:
+                new_pe_data['using_fallback'] = current_pe.get('using_fallback', False)
+                
+            if current_pe.get('strike') != pe_option.get('strike', 'N/A'):
+                new_pe_data['strike'] = pe_option.get('strike', 'N/A')
+                needs_update = True
+            else:
+                new_pe_data['strike'] = current_pe.get('strike', 'N/A')
+            
+            # Only update if needed
+            if needs_update or 'pe' not in current_option_data:
+                result['options'][symbol]['pe'] = new_pe_data
+            else:
+                result['options'][symbol]['pe'] = current_pe
     
-    # Process PCR data (simplified)
+    # Process PCR data with similar approach
     for symbol, data in pcr_data.items():
         if symbol in stocks_data:
-            result['pcr'][symbol] = {
-                'current': data['current'],
-                'trend': data['trend'],
-                'strength': data['strength']
-            }
+            current_pcr = current_ui_data.get('pcr', {}).get(symbol, {})
+            
+            needs_update = False
+            new_pcr_data = {}
+            
+            if current_pcr.get('current') != data['current']:
+                new_pcr_data['current'] = data['current']
+                needs_update = True
+            else:
+                new_pcr_data['current'] = current_pcr.get('current', 1.0)
+                
+            if current_pcr.get('trend') != data['trend']:
+                new_pcr_data['trend'] = data['trend']
+                needs_update = True
+            else:
+                new_pcr_data['trend'] = current_pcr.get('trend', 'NEUTRAL')
+                
+            if current_pcr.get('strength') != data['strength']:
+                new_pcr_data['strength'] = data['strength']
+                needs_update = True
+            else:
+                new_pcr_data['strength'] = current_pcr.get('strength', 0)
+            
+            if needs_update or symbol not in current_ui_data.get('pcr', {}):
+                result['pcr'][symbol] = new_pcr_data
+            else:
+                result['pcr'][symbol] = current_pcr
     
     return result
 # Connection status indicator callback
@@ -6952,14 +7137,14 @@ def handle_retry_connection(n_clicks):
     else:
         return False, True, "Connection Failed", broker_error_message or "Failed to connect to broker", "danger"
 
-# Dynamic stock cards container callback
 @app.callback(
     Output("stock-cards-container", "children"),
-    [Input('medium-interval', 'n_intervals'),
+    [Input('slow-interval', 'n_intervals'),  # Changed to slow interval - updates less frequently
      Input("add-stock-button", "n_clicks"),
      Input({"type": "remove-stock-btn", "index": ALL}, "n_clicks")]
 )
 def update_stock_cards(n_intervals, add_clicks, remove_clicks):
+    """Create stock cards with better performance by reducing recreations"""
     # Create stock cards dynamically based on stocks_data
     stock_cards = []
     
@@ -6971,14 +7156,11 @@ def update_stock_cards(n_intervals, add_clicks, remove_clicks):
         return [html.Div("No stocks added. Use the Add Stock form above to add stocks or indices.", 
                        className="text-center text-muted my-5")]
     
-    # Ensure we have an even number of cards by adding a placeholder if needed
-    if len(symbols) % 2 == 1:
-        symbols_to_display = symbols.copy()
-    else:
-        symbols_to_display = symbols
+    # Sort symbols alphabetically for consistent ordering
+    symbols.sort()
     
     # Create rows of cards
-    for i in range(0, len(symbols_to_display), 2):
+    for i in range(0, len(symbols), 2):
         row_cards = []
         for j in range(2):
             idx = i + j
@@ -7005,7 +7187,6 @@ def update_stock_cards(n_intervals, add_clicks, remove_clicks):
         stock_cards.append(dbc.Row(row_cards))
     
     return stock_cards
-
 # Add Stock Callback
 @app.callback(
     [Output("add-stock-message", "children"),
@@ -7156,16 +7337,39 @@ def update_strategy_settings(scalp_enabled, swing_enabled, momentum_enabled, new
         Output({"type": "strategy-prediction", "index": ALL}, "children")
     ],
     [Input('ui-data-store', 'data')],
-    [State({"type": "data-source-badge", "index": ALL}, "id")]
+    [
+        State({"type": "data-source-badge", "index": ALL}, "id"),
+        State({"type": "stock-price", "index": ALL}, "children"),
+        State({"type": "stock-price", "index": ALL}, "className"),
+        State({"type": "stock-change", "index": ALL}, "children"),
+        State({"type": "stock-change", "index": ALL}, "className"),
+        State({"type": "stock-ohlc", "index": ALL}, "children"),
+        State({"type": "stock-pcr", "index": ALL}, "children"),
+        State({"type": "pcr-strength", "index": ALL}, "children"),
+        State({"type": "stock-sentiment", "index": ALL}, "children"),
+        State({"type": "stock-sentiment", "index": ALL}, "className"),
+        State({"type": "stock-sr-levels", "index": ALL}, "children"),
+        State({"type": "stock-last-update", "index": ALL}, "children"),
+        State({"type": "strategy-prediction", "index": ALL}, "children")
+    ]
 )
-def update_stocks_display(data, badge_ids):
+def update_stocks_display(data, 
+                         badge_ids, 
+                         current_prices, current_price_classes,
+                         current_changes, current_change_classes,
+                         current_ohlc, current_pcr_values,
+                         current_pcr_strength, current_sentiment_texts,
+                         current_sentiment_classes, current_sr_levels,
+                         current_last_updates, current_strategy_predictions):
+    """Update stock display values with intelligent state management to prevent blinking"""
+    
     if not data:
         # Return placeholders if no data
         empty_result = [
             ["Live"] * len(badge_ids),  # data source badges
             ["badge bg-success ms-2 small"] * len(badge_ids),  # source badge classes
             ["Loading..."] * len(badge_ids),  # price outputs
-            ["fs-4 text-light smooth-transition price-change"] * len(badge_ids),  # price class outputs
+            ["fs-4 text-light smooth-transition price-value"] * len(badge_ids),  # price class outputs
             ["0.00%"] * len(badge_ids),  # change text outputs
             ["text-secondary smooth-transition price-change"] * len(badge_ids),  # change class outputs
             ["OHLC data not available"] * len(badge_ids),  # ohlc outputs
@@ -7179,8 +7383,7 @@ def update_stocks_display(data, badge_ids):
         ]
         return empty_result
 
-    symbols = [id_dict["index"] for id_dict in badge_ids]
-    
+    # Initialize output arrays
     source_badges = []
     source_classes = []
     price_outputs = []
@@ -7196,53 +7399,94 @@ def update_stocks_display(data, badge_ids):
     last_update_outputs = []
     strategy_prediction_outputs = []
     
-    for symbol in symbols:
+    # Get symbols from the badge IDs
+    symbols = [id_dict["index"] for id_dict in badge_ids]
+    
+    # Process each symbol
+    for i, symbol in enumerate(symbols):
+        # Get current values from state (to preserve if unchanged)
+        current_price = current_prices[i] if i < len(current_prices) else "Loading..."
+        current_price_class = current_price_classes[i] if i < len(current_price_classes) else "fs-4 text-light price-value"
+        current_change = current_changes[i] if i < len(current_changes) else "0.00%"
+        current_change_class = current_change_classes[i] if i < len(current_change_classes) else "text-secondary price-change"
+        current_ohlc_value = current_ohlc[i] if i < len(current_ohlc) else "OHLC data not available"
+        current_pcr_value = current_pcr_values[i] if i < len(current_pcr_values) else "N/A"
+        current_pcr_strength_value = current_pcr_strength[i] if i < len(current_pcr_strength) else ""
+        current_sentiment_text = current_sentiment_texts[i] if i < len(current_sentiment_texts) else "NEUTRAL"
+        current_sentiment_class = current_sentiment_classes[i] if i < len(current_sentiment_classes) else "badge bg-secondary"
+        current_sr_level = current_sr_levels[i] if i < len(current_sr_levels) else "S/R not available"
+        current_last_update = current_last_updates[i] if i < len(current_last_updates) else "Not yet updated"
+        current_strategy_prediction = current_strategy_predictions[i] if i < len(current_strategy_predictions) else ""
+        
         if symbol in stocks_data:
             stock_info = stocks_data[symbol]
-            stock_data = data['stocks'].get(symbol, {})
+            stock_data = data.get('stocks', {}).get(symbol, {})
             
-            # Set data source badge
-            source_badges.append("Live" if broker_connected else "Offline")
-            source_classes.append("badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition")
+            # 1. Source Badge - only changes with broker connection
+            badge_text = "Live" if broker_connected else "Offline"
+            badge_class = "badge bg-success ms-2 small smooth-transition" if broker_connected else "badge bg-warning text-dark ms-2 small smooth-transition"
+            source_badges.append(badge_text)
+            source_classes.append(badge_class)
             
-            # Format price with transition classes
+            # 2. Price with intelligent highlight management
             ltp = stock_data.get('price')
             if ltp is not None:
                 price_text = f"₹{ltp:.2f}"
-                price_outputs.append(price_text)
                 
-                # Determine highlight class for price changes
-                base_class = "fs-4 text-light smooth-transition price-change"
-                if stock_data.get('has_changed', False):
-                    if stock_data.get('change_direction') == 'up':
-                        highlight_class = f"{base_class} highlight-positive"
-                    elif stock_data.get('change_direction') == 'down':
-                        highlight_class = f"{base_class} highlight-negative"
+                # Only update if changed
+                if price_text != current_price:
+                    price_outputs.append(price_text)
+                    
+                    # Apply highlight only for actual changes
+                    base_class = "fs-4 text-light price-value smooth-transition"
+                    if stock_data.get('has_changed', False):
+                        if stock_data.get('change_direction') == 'up':
+                            price_classes.append(f"{base_class} highlight-positive")
+                        elif stock_data.get('change_direction') == 'down':
+                            price_classes.append(f"{base_class} highlight-negative")
+                        else:
+                            price_classes.append(base_class)
                     else:
-                        highlight_class = base_class
+                        price_classes.append(base_class)
                 else:
-                    highlight_class = base_class
-                
-                price_classes.append(highlight_class)
+                    # Keep current price
+                    price_outputs.append(current_price)
+                    
+                    # Handle highlight classes - remove after animation completes
+                    if 'highlight-positive' in current_price_class or 'highlight-negative' in current_price_class:
+                        # Strip out the highlight classes to prevent accumulation
+                        base_classes = []
+                        for cls in current_price_class.split():
+                            if 'highlight' not in cls:
+                                base_classes.append(cls)
+                        price_classes.append(' '.join(base_classes))
+                    else:
+                        price_classes.append(current_price_class)
             else:
-                price_outputs.append("Waiting for data...")
-                price_classes.append("fs-4 text-light smooth-transition")
+                price_outputs.append("Waiting...")
+                price_classes.append("fs-4 text-light price-value smooth-transition")
             
-            # Format change percentage with transitions
-            change_pct = stock_data.get("change", 0)
-            base_change_class = "smooth-transition price-change"
-            
+            # 3. Change Percentage with appropriate color
+            change_pct = stock_data.get('change', 0)
             if change_pct > 0:
-                change_text_outputs.append(f"+{change_pct:.2f}%")
-                change_class_outputs.append(f"text-success {base_change_class}")
+                change_text = f"+{change_pct:.2f}%"
+                change_class = "text-success price-change smooth-transition"
             elif change_pct < 0:
-                change_text_outputs.append(f"{change_pct:.2f}%")
-                change_class_outputs.append(f"text-danger {base_change_class}")
+                change_text = f"{change_pct:.2f}%"
+                change_class = "text-danger price-change smooth-transition"
             else:
-                change_text_outputs.append("0.00%")
-                change_class_outputs.append(f"text-warning {base_change_class}")
+                change_text = "0.00%"
+                change_class = "text-secondary price-change smooth-transition"
             
-            # Format OHLC with smooth transitions
+            # Only update if value changed
+            if change_text != current_change:
+                change_text_outputs.append(change_text)
+                change_class_outputs.append(change_class)
+            else:
+                change_text_outputs.append(current_change)
+                change_class_outputs.append(current_change_class)
+            
+            # 4. OHLC Data
             ohlc_data = stock_data.get('ohlc', {})
             if all(x is not None for x in [
                 ohlc_data.get('open'), 
@@ -7251,17 +7495,27 @@ def update_stocks_display(data, badge_ids):
                 ohlc_data.get('previous')
             ]):
                 ohlc_text = f"O: {ohlc_data['open']:.2f} H: {ohlc_data['high']:.2f} L: {ohlc_data['low']:.2f} P: {ohlc_data['previous']:.2f}"
-                ohlc_outputs.append(ohlc_text)
+                
+                # Only update if changed
+                if ohlc_text != current_ohlc_value:
+                    ohlc_outputs.append(ohlc_text)
+                else:
+                    ohlc_outputs.append(current_ohlc_value)
             else:
                 ohlc_outputs.append("OHLC data not available")
             
-            # Format PCR with smooth transitions
-            pcr_value = data['pcr'].get(symbol, {}).get('current', 1.0)
+            # 5. PCR Value
+            pcr_value = data.get('pcr', {}).get(symbol, {}).get('current', 1.0)
             pcr_text = f"{pcr_value:.2f}"
-            pcr_outputs.append(pcr_text)
             
-            # Format PCR strength indicator with transitions
-            pcr_strength = data['pcr'].get(symbol, {}).get('strength', 0)
+            # Only update if changed
+            if pcr_text != current_pcr_value:
+                pcr_outputs.append(pcr_text)
+            else:
+                pcr_outputs.append(current_pcr_value)
+            
+            # 6. PCR Strength Indicator
+            pcr_strength = data.get('pcr', {}).get(symbol, {}).get('strength', 0)
             if pcr_strength > 0.5:
                 pcr_strength_text = html.Span("↑", className="text-success fw-bold smooth-transition", title="Strong Bullish Signal")
             elif pcr_strength > 0.2:
@@ -7275,25 +7529,34 @@ def update_stocks_display(data, badge_ids):
             
             pcr_strength_outputs.append(pcr_strength_text)
             
-            # Format sentiment with smooth transitions
-            sentiment = data['sentiment'].get(symbol, "NEUTRAL")
-            sentiment_text_outputs.append(sentiment)
+            # 7. Sentiment with appropriate badge
+            sentiment = data.get('sentiment', {}).get(symbol, "NEUTRAL")
             
-            base_sentiment_class = "badge smooth-transition"
-            if "BULLISH" in sentiment:
-                if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success")
+            # Only update if changed
+            if sentiment != current_sentiment_text:
+                sentiment_text_outputs.append(sentiment)
+                
+                # Determine appropriate class
+                base_sentiment_class = "badge smooth-transition"
+                if "BULLISH" in sentiment:
+                    if "STRONGLY" in sentiment:
+                        sentiment_class = f"{base_sentiment_class} bg-success"
+                    else:
+                        sentiment_class = f"{base_sentiment_class} bg-success bg-opacity-75"
+                elif "BEARISH" in sentiment:
+                    if "STRONGLY" in sentiment:
+                        sentiment_class = f"{base_sentiment_class} bg-danger"
+                    else:
+                        sentiment_class = f"{base_sentiment_class} bg-danger bg-opacity-75"
                 else:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-success bg-opacity-75")
-            elif "BEARISH" in sentiment:
-                if "STRONGLY" in sentiment:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger")
-                else:
-                    sentiment_class_outputs.append(f"{base_sentiment_class} bg-danger bg-opacity-75")
+                    sentiment_class = f"{base_sentiment_class} bg-secondary"
+                
+                sentiment_class_outputs.append(sentiment_class)
             else:
-                sentiment_class_outputs.append(f"{base_sentiment_class} bg-secondary")
+                sentiment_text_outputs.append(current_sentiment_text)
+                sentiment_class_outputs.append(current_sentiment_class)
             
-            # Get support/resistance levels
+            # 8. Support/Resistance Levels
             support_levels = stock_info.get("support_levels", [])
             resistance_levels = stock_info.get("resistance_levels", [])
             
@@ -7303,17 +7566,29 @@ def update_stocks_display(data, badge_ids):
                 s_levels = [f"{s:.2f}" for s in support_levels[:2]]
                 r_levels = [f"{r:.2f}" for r in resistance_levels[:2]]
                 sr_text = f"S: {', '.join(s_levels)} | R: {', '.join(r_levels)}"
-                sr_levels_outputs.append(sr_text)
+                
+                # Only update if changed
+                if sr_text != current_sr_level:
+                    sr_levels_outputs.append(sr_text)
+                else:
+                    sr_levels_outputs.append(current_sr_level)
             else:
                 sr_levels_outputs.append("S/R not available")
             
-            # Format last update time
-            last_update_outputs.append(f"Updated: {stock_data.get('last_updated', 'N/A')}")
+            # 9. Last Update Time
+            update_text = f"Updated: {stock_data.get('last_updated', 'N/A')}"
             
-            # Format strategy prediction
+            # Only update if changed
+            if update_text != current_last_update:
+                last_update_outputs.append(update_text)
+            else:
+                last_update_outputs.append(current_last_update)
+            
+            # 10. Strategy Prediction
             predicted_strategy = stock_info.get("predicted_strategy")
             strategy_confidence = stock_info.get("strategy_confidence", 0)
             
+            # Formulate prediction text
             if predicted_strategy and strategy_confidence > 0.5:
                 strategy_class = "text-success font-weight-bold" if strategy_confidence > 0.7 else "text-info"
                 strategy_pred_text = html.Div([
