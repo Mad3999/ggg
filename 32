@@ -882,6 +882,7 @@ def update_news_data():
         if idx not in stock_universe:
             stock_universe.append(idx)
     
+
     # Fetch news
     news_items = fetch_news_from_sources()
     
@@ -1062,15 +1063,10 @@ def fetch_history_from_yahoo(symbol, period="3mo"):
     """
     try:
         # Map symbols to Yahoo format
-        if symbol.upper() in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+        if symbol.upper() in ["NIFTY"]:
             if symbol.upper() == "NIFTY":
                 yahoo_symbol = "^NSEI"
-            elif symbol.upper() == "BANKNIFTY":
-                yahoo_symbol = "^NSEBANK"
-            elif symbol.upper() == "FINNIFTY":
-                yahoo_symbol = "NIFTY_FIN_SERVICE.NS"
-            else:
-                yahoo_symbol = f"{symbol}.NS"
+            
         else:
             yahoo_symbol = f"{symbol}.NS"
         
@@ -1135,7 +1131,7 @@ def fetch_history_from_yahoo(symbol, period="3mo"):
         logger.error(f"Error fetching history for {symbol} from Yahoo Finance: {e}", exc_info=True)
         return None
 
-def load_historical_data(symbol, period="3mo", force_refresh=False):
+def load_historical_data(symbol, period="1mo", force_refresh=False):
     """Load historical data with proper validation and error handling"""
     if symbol not in stocks_data:
         logger.warning(f"Cannot load history for unknown symbol: {symbol}")
@@ -2274,6 +2270,9 @@ def find_option_token_in_json(symbol, strike, option_type, expiry_date=None):
     # If we couldn't find an exact match, log a warning
     logger.warning(f"No exact matching token found in script master for {exact_symbol}")
     return None
+# Add this global declaration at the top of the script, near other global variable declarations
+tokens_and_symbols_df = None
+
 def fetch_options_from_csv(stock_name, target_strike=None, csv_path=r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"):
     """
     Fetch options for a specific stock with the closest expiry and near a given strike price.
@@ -2369,7 +2368,6 @@ def fetch_options_from_csv(stock_name, target_strike=None, csv_path=r"C:\Users\m
     except Exception as e:
         logger.error(f"Error fetching options from CSV: {e}", exc_info=True)
         return {"CE": None, "PE": None}
-
 def update_options_from_csv(symbol, target_strike=None):
     """
     Update options data for a specific stock using CSV data.
@@ -3218,6 +3216,8 @@ def find_and_add_atm_options(symbol, current_price):
     
     # Use the new function to update options from CSV
     return update_options_from_csv(symbol, current_price)
+
+
 def find_options_at_strikes(symbol, strikes, expiry_date=None):
     """
     Find options at specific strike prices
@@ -3310,9 +3310,10 @@ def find_suitable_options(stock_symbol, stock_price, expiry_days=7):
 
 def update_option_selection(force_update=False):
     """
-    Update option selection for all stocks based on current prices using CSV data.
+    Update option selection for all stocks based on current prices
+    with enhanced expiry and strike selection
     """
-    global stocks_data, last_option_selection_update
+    global last_option_selection_update
     
     current_time = datetime.now()
     
@@ -3329,54 +3330,81 @@ def update_option_selection(force_update=False):
         if current_price is None or current_price <= 0:
             logger.warning(f"Skipping option selection for {symbol}: Invalid price {current_price}")
             continue
-            
-        # Check if we need new options
-        need_new_options = False
         
-        # Check current primary options
-        primary_ce = stock_info.get("primary_ce")
-        primary_pe = stock_info.get("primary_pe")
+        # Check if options need to be updated
+        update_needed = (
+            stock_info.get("primary_ce") is None or 
+            stock_info.get("primary_pe") is None or
+            _should_update_options(symbol, current_price)
+        )
         
-        if primary_ce is None or primary_pe is None:
-            need_new_options = True
-            logger.info(f"Missing primary options for {symbol}")
-        elif primary_ce in options_data and primary_pe in options_data:
-            # Check if current options are still ATM
-            ce_strike = float(options_data[primary_ce].get("strike", 0))
-            pe_strike = float(options_data[primary_pe].get("strike", 0))
-            
-            # Calculate appropriate strike interval
-            if current_price < 100:
-                strike_interval = 5
-            elif current_price < 1000:
-                strike_interval = 10
-            elif current_price < 10000:
-                strike_interval = 50
-            else:
-                strike_interval = 100
-            
-            # Check if strikes are still close to current price
-            ce_distance = abs(current_price - ce_strike)
-            pe_distance = abs(current_price - pe_strike)
-            
-            if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
-                need_new_options = True
-                logger.info(f"Options for {symbol} too far from current price (CE distance: {ce_distance:.2f}, PE distance: {pe_distance:.2f})")
-            
-            # Check if options are using fallback data
-            elif any(options_data[opt].get("using_fallback", False) for opt in [primary_ce, primary_pe]):
-                need_new_options = True
-                logger.info(f"Options for {symbol} are using fallback data, finding better options")
-        else:
-            need_new_options = True
-            logger.info(f"Options data missing for {symbol}")
-        
-        # Get new options if needed
-        if need_new_options:
-            update_options_from_csv(symbol, current_price)
+        if update_needed:
+            find_and_add_atm_options(symbol, current_price)
     
     # Update timestamp
     last_option_selection_update = current_time
+
+def _should_update_options(symbol, current_price):
+    """
+    Determine if options should be updated based on multiple criteria
+    
+    Args:
+        symbol (str): Stock/index symbol
+        current_price (float): Current market price
+    
+    Returns:
+        bool: Whether options should be updated
+    """
+    stock_info = stocks_data.get(symbol, {})
+    
+    # Check for primary options
+    primary_ce = stock_info.get("primary_ce")
+    primary_pe = stock_info.get("primary_pe")
+    
+    if not primary_ce or not primary_pe:
+        return True
+    
+    # Check if options exist in options_data
+    if (primary_ce not in options_data or 
+        primary_pe not in options_data):
+        return True
+    
+    # Check strike proximity
+    ce_details = options_data.get(primary_ce, {})
+    pe_details = options_data.get(primary_pe, {})
+    
+    ce_strike = float(ce_details.get('strike', 0))
+    pe_strike = float(pe_details.get('strike', 0))
+    
+    # Determine appropriate strike interval
+    if current_price < 100:
+        strike_interval = 5
+    elif current_price < 1000:
+        strike_interval = 10
+    elif current_price < 10000:
+        strike_interval = 50
+    else:
+        strike_interval = 100
+    
+    # Calculate ATM strike
+    atm_strike = round(current_price / strike_interval) * strike_interval
+    
+    # Check if current options are too far from ATM
+    ce_distance = abs(ce_strike - atm_strike)
+    pe_distance = abs(pe_strike - atm_strike)
+    
+    if ce_distance > strike_interval * 2 or pe_distance > strike_interval * 2:
+        logger.info(f"Updating options for {symbol}: Current strikes too far from ATM")
+        return True
+    
+    # Check if options are using fallback data
+    if (ce_details.get("using_fallback", False) or 
+        pe_details.get("using_fallback", False)):
+        logger.info(f"Updating options for {symbol}: Current options using fallback data")
+        return True
+    
+    return False
+
 def schedule_option_token_refresh():
     """
     Schedule periodic option token refreshes to ensure tokens are valid
@@ -4847,7 +4875,7 @@ def should_exit_trade(option_key):
 def update_dynamic_stop_loss(option_key):
     """
     Update stop loss dynamically based on price action with enhanced algorithm
-    that adapts to changing market conditions
+    that adapts to changing market conditions and triggers after 10 points movement
     """
     if not trading_state.active_trades.get(option_key, False):
         return
@@ -4866,117 +4894,86 @@ def update_dynamic_stop_loss(option_key):
     option_type = option_info["option_type"]
     strategy_type = trading_state.strategy_type[option_key]
     
-    # Calculate current profit percentage
-    if option_type == "CE":
-        current_profit_pct = (current_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
-        
-        if ENHANCED_TRAILING_SL:
-            # Enhanced trailing stop loss with multiple thresholds
-            if not trading_state.trailing_sl_activated[option_key] and current_profit_pct >= MIN_PROFIT_FOR_TRAILING:
-                # Activate trailing stop loss
-                trading_state.trailing_sl_activated[option_key] = True
-                
-                # Set initial trailing stop loss based on strategy
-                if strategy_type == "SCALP":
-                    # Tighter stop for scalping
-                    new_stop_loss = entry_price + (current_price - entry_price) * 0.3
-                elif strategy_type == "MOMENTUM":
-                    # Moderate stop for momentum
-                    new_stop_loss = entry_price + (current_price - entry_price) * 0.2
-                elif strategy_type == "NEWS":
-                    # Moderate-tight stop for news
-                    new_stop_loss = entry_price + (current_price - entry_price) * 0.25
-                else:  # SWING
-                    # Wider stop for swing
-                    new_stop_loss = entry_price
-                
-                trading_state.stop_loss[option_key] = new_stop_loss
-                logger.info(f"{option_key} enhanced trailing stop loss activated at {current_profit_pct:.2f}%, SL={new_stop_loss:.2f}")
-            
-            elif trading_state.trailing_sl_activated[option_key]:
-                # Progressive trailing stop loss tightens as profit increases
-                for i, threshold in enumerate(TRAILING_STEP_INCREMENTS):
-                    if current_profit_pct >= threshold:
-                        # Calculate new stop loss based on threshold level
-                        sl_percentage = TRAILING_SL_PERCENTAGES[i]
-                        potential_sl = current_price * (1 - sl_percentage / 100)
-                        
-                        # Only move stop loss up
-                        if potential_sl > current_stop_loss:
-                            trading_state.stop_loss[option_key] = potential_sl
-                            logger.info(f"{option_key} trailing SL updated to {potential_sl:.2f} at {threshold}% profit level")
-                            break
-        else:
-            # Original trailing stop loss logic
-            if current_profit_pct > 2.0 and not trading_state.trailing_sl_activated[option_key]:
-                # Activate trailing stop loss at 2% profit
-                trading_state.trailing_sl_activated[option_key] = True
-                new_stop_loss = entry_price  # Move stop loss to breakeven
-                trading_state.stop_loss[option_key] = new_stop_loss
-                logger.info(f"{option_key} trailing stop loss activated, moved to breakeven")
-                
-            elif trading_state.trailing_sl_activated[option_key]:
-                # Continue trailing - only move stop loss up
-                trail_price = current_price * 0.99  # 1% below current price
-                if trail_price > current_stop_loss:
-                    trading_state.stop_loss[option_key] = trail_price
-                    logger.info(f"{option_key} trailing stop loss updated to {trail_price}")
+    # Define movement threshold (10 points)
+    MOVEMENT_THRESHOLD = 10
     
-    else:  # PE
-        current_profit_pct = (entry_price - current_price) / entry_price * 100 if entry_price > 0 else 0
+    # Calculate current profit/loss
+    if option_type == "CE":
+        current_profit_or_loss = current_price - entry_price
         
-        if ENHANCED_TRAILING_SL:
-            # Enhanced trailing stop loss with multiple thresholds
-            if not trading_state.trailing_sl_activated[option_key] and current_profit_pct >= MIN_PROFIT_FOR_TRAILING:
-                # Activate trailing stop loss
-                trading_state.trailing_sl_activated[option_key] = True
+        # Check if price has moved significantly
+        if abs(current_profit_or_loss) >= MOVEMENT_THRESHOLD:
+            # Adjust stop loss based on movement
+            if current_profit_or_loss > 0:
+                # Profit scenario - tighten stop loss
+                new_stop_loss = entry_price + (current_price - entry_price) * 0.5  # 50% of the move
                 
-                # Set initial trailing stop loss based on strategy
-                if strategy_type == "SCALP":
-                    # Tighter stop for scalping
-                    new_stop_loss = entry_price - (entry_price - current_price) * 0.3
-                elif strategy_type == "MOMENTUM":
-                    # Moderate stop for momentum
-                    new_stop_loss = entry_price - (entry_price - current_price) * 0.2
-                elif strategy_type == "NEWS":
-                    # Moderate-tight stop for news
-                    new_stop_loss = entry_price - (entry_price - current_price) * 0.25
-                else:  # SWING
-                    # Wider stop for swing
-                    new_stop_loss = entry_price
+                # Only update if new stop loss is better than current
+                if new_stop_loss > current_stop_loss:
+                    trading_state.stop_loss[option_key] = new_stop_loss
+                    logger.info(f"{option_key} stop loss adjusted to {new_stop_loss:.2f} after {current_profit_or_loss:.2f} points move")
+            else:
+                # Loss scenario - adjust stop loss to limit further loss
+                new_stop_loss = entry_price - abs(current_profit_or_loss) * 0.5
                 
-                trading_state.stop_loss[option_key] = new_stop_loss
-                logger.info(f"{option_key} enhanced trailing stop loss activated at {current_profit_pct:.2f}%, SL={new_stop_loss:.2f}")
+                # Only update if new stop loss is better than current
+                if new_stop_loss < current_stop_loss:
+                    trading_state.stop_loss[option_key] = new_stop_loss
+                    logger.info(f"{option_key} stop loss adjusted to {new_stop_loss:.2f} after {current_profit_or_loss:.2f} points move")
+    
+    else:  # PE option
+        current_profit_or_loss = entry_price - current_price
+        
+        # Check if price has moved significantly
+        if abs(current_profit_or_loss) >= MOVEMENT_THRESHOLD:
+            # Adjust stop loss based on movement
+            if current_profit_or_loss > 0:
+                # Profit scenario - tighten stop loss
+                new_stop_loss = entry_price - (current_profit_or_loss) * 0.5  # 50% of the move
+                
+                # Only update if new stop loss is better than current
+                if new_stop_loss < current_stop_loss:
+                    trading_state.stop_loss[option_key] = new_stop_loss
+                    logger.info(f"{option_key} stop loss adjusted to {new_stop_loss:.2f} after {current_profit_or_loss:.2f} points move")
+            else:
+                # Loss scenario - adjust stop loss to limit further loss
+                new_stop_loss = entry_price + abs(current_profit_or_loss) * 0.5
+                
+                # Only update if new stop loss is better than current
+                if new_stop_loss > current_stop_loss:
+                    trading_state.stop_loss[option_key] = new_stop_loss
+                    logger.info(f"{option_key} stop loss adjusted to {new_stop_loss:.2f} after {current_profit_or_loss:.2f} points move")
+    
+    # Additional strategy-specific adjustments
+    if strategy_type == "SCALP":
+        # More aggressive stop loss adjustment for scalping
+        stop_loss_multiplier = 0.3
+    elif strategy_type == "MOMENTUM":
+        stop_loss_multiplier = 0.4
+    elif strategy_type == "NEWS":
+        stop_loss_multiplier = 0.35
+    else:  # SWING
+        stop_loss_multiplier = 0.5
+    
+    # Fine-tune stop loss based on strategy
+    try:
+        # Get volatility of the underlying stock/index
+        parent_symbol = option_info.get("parent_symbol")
+        if parent_symbol and parent_symbol in volatility_data:
+            volatility = volatility_data[parent_symbol].get("current", 0)
             
-            elif trading_state.trailing_sl_activated[option_key]:
-                # Progressive trailing stop loss tightens as profit increases
-                for i, threshold in enumerate(TRAILING_STEP_INCREMENTS):
-                    if current_profit_pct >= threshold:
-                        # Calculate new stop loss based on threshold level
-                        sl_percentage = TRAILING_SL_PERCENTAGES[i]
-                        potential_sl = current_price * (1 + sl_percentage / 100)
-                        
-                        # Only move stop loss down
-                        if potential_sl < current_stop_loss:
-                            trading_state.stop_loss[option_key] = potential_sl
-                            logger.info(f"{option_key} trailing SL updated to {potential_sl:.2f} at {threshold}% profit level")
-                            break
-        else:
-            # Original trailing stop loss logic
-            if current_profit_pct > 2.0 and not trading_state.trailing_sl_activated[option_key]:
-                # Activate trailing stop loss at 2% profit
-                trading_state.trailing_sl_activated[option_key] = True
-                new_stop_loss = entry_price  # Move stop loss to breakeven
-                trading_state.stop_loss[option_key] = new_stop_loss
-                logger.info(f"{option_key} trailing stop loss activated, moved to breakeven")
-                
-            elif trading_state.trailing_sl_activated[option_key]:
-                # Continue trailing - only move stop loss down
-                trail_price = current_price * 1.01  # 1% above current price
-                if trail_price < current_stop_loss:
-                    trading_state.stop_loss[option_key] = trail_price
-                    logger.info(f"{option_key} trailing stop loss updated to {trail_price}")
+            # Adjust stop loss sensitivity based on volatility
+            if volatility > 1.0:
+                # High volatility - more conservative stop loss
+                stop_loss_multiplier *= 0.7
+            elif volatility < 0.5:
+                # Low volatility - slightly more aggressive stop loss
+                stop_loss_multiplier *= 1.2
+    except Exception as e:
+        logger.warning(f"Error adjusting stop loss for volatility: {e}")
 
+    # Final logging
+    logger.debug(f"Dynamic SL Update - Option: {option_key}, Current Price: {current_price:.2f}, Entry: {entry_price:.2f}, New SL: {trading_state.stop_loss[option_key]:.2f}")
 def update_dynamic_target(option_key):
     """
     Update target price dynamically based on market conditions and price momentum
@@ -5213,7 +5210,157 @@ def exit_trade(option_key, reason="Manual"):
         f"Duration={duration_minutes:.1f}min, Reason={reason}"
     )
     return True
+def initialize_symbol_tracking():
+    """
+    Initialize and cache symbol tracking data from CSV
+    Loads symbols only once and provides efficient lookup methods
+    """
+    global tokens_and_symbols_df, stocks_symbol_cache, options_symbol_cache
+    
+    try:
+        # Load CSV data once
+        csv_path = r"C:\Users\madhu\Pictures\ubuntu\stocks_and_options.csv"
+        tokens_and_symbols_df = pd.read_csv(csv_path)
+        
+        # Create symbol caches
+        stocks_symbol_cache = {}
+        options_symbol_cache = {}
+        
+        # Populate stock symbol cache (NSE stocks)
+        stocks_data = tokens_and_symbols_df[
+            (tokens_and_symbols_df['exch_seg'] == 'NSE') & 
+            (tokens_and_symbols_df['strike'].isna())
+        ]
+        
+        for _, row in stocks_data.iterrows():
+            stocks_symbol_cache[row['symbol']] = {
+                'token': row['token'],
+                'name': row['name'],
+                'exchange': row['exch_seg']
+            }
+        
+        # Populate options symbol cache (NFO options)
+        options_data = tokens_and_symbols_df[
+            (tokens_and_symbols_df['exch_seg'] == 'NFO') & 
+            (tokens_and_symbols_df['strike'].notna())
+        ]
+        
+        for _, row in options_data.iterrows():
+            options_symbol_cache[row['symbol']] = {
+                'token': row['token'],
+                'name': row['name'],
+                'strike': row['strike'],
+                'expiry': row['expiry'],
+                'exchange': row['exch_seg']
+            }
+        
+        logger.info(f"Initialized symbol caches: {len(stocks_symbol_cache)} stocks, {len(options_symbol_cache)} options")
+        
+    except Exception as e:
+        logger.error(f"Error initializing symbol tracking: {e}")
+        stocks_symbol_cache = {}
+        options_symbol_cache = {}
 
+def get_stock_symbol_details(symbol):
+    """
+    Retrieve stock symbol details from cache
+    
+    Args:
+        symbol (str): Stock symbol
+    
+    Returns:
+        dict: Symbol details or None
+    """
+    return stocks_symbol_cache.get(symbol.upper())
+
+def get_option_symbol_details(symbol):
+    """
+    Retrieve option symbol details from cache
+    
+    Args:
+        symbol (str): Option symbol
+    
+    Returns:
+        dict: Option details or None
+    """
+    return options_symbol_cache.get(symbol.upper())
+
+def remove_stock_symbol(symbol):
+    """
+    Remove a stock symbol from the cache
+    
+    Args:
+        symbol (str): Stock symbol to remove
+    """
+    symbol = symbol.upper()
+    if symbol in stocks_symbol_cache:
+        del stocks_symbol_cache[symbol]
+        logger.info(f"Removed stock symbol {symbol} from cache")
+
+def remove_option_symbol(symbol):
+    """
+    Remove an option symbol from the cache
+    
+    Args:
+        symbol (str): Option symbol to remove
+    """
+    symbol = symbol.upper()
+    if symbol in options_symbol_cache:
+        del options_symbol_cache[symbol]
+        logger.info(f"Removed option symbol {symbol} from cache")
+
+def fetch_bulk_data_with_cached_symbols(symbols):
+    """
+    Fetch bulk data using cached symbol information
+    
+    Args:
+        symbols (list): List of symbols to fetch
+    
+    Returns:
+        dict: Fetched data with cached symbol details
+    """
+    results = {
+        "stocks": {},
+        "options": {}
+    }
+    
+    # Process stock symbols
+    for symbol in symbols:
+        symbol_details = get_stock_symbol_details(symbol)
+        if symbol_details:
+            # Fetch stock data using cached token
+            stock_data = fetch_stock_data_by_token(
+                symbol, 
+                symbol_details['token'], 
+                symbol_details['exchange']
+            )
+            if stock_data:
+                results["stocks"][symbol] = stock_data
+        
+        # Check for associated options
+        if symbol in stocks_data:
+            # Find and fetch associated options
+            ce_symbol = f"{symbol}CE"
+            pe_symbol = f"{symbol}PE"
+            
+            ce_details = get_option_symbol_details(ce_symbol)
+            pe_details = get_option_symbol_details(pe_symbol)
+            
+            if ce_details:
+                ce_data = fetch_option_data_by_token(ce_symbol, ce_details['token'])
+                if ce_data:
+                    results["options"][ce_symbol] = ce_data
+            
+            if pe_details:
+                pe_data = fetch_option_data_by_token(pe_symbol, pe_details['token'])
+                if pe_data:
+                    results["options"][pe_symbol] = pe_data
+    
+    return results
+
+
+# Initialize symbol tracking when the module is first imported
+initialize_symbol_tracking()
 def apply_trading_strategy():
     """Apply the trading strategy by checking for entry and exit conditions."""
     # Skip if all strategies are disabled or broker not connected
@@ -5427,7 +5574,6 @@ def refresh_session_if_needed():
         smart_api = None
         return connect_to_broker()
 
-# Function to search for symbol tokens
 @rate_limited
 def search_symbols(search_text, exchange=None):
     """
@@ -5460,8 +5606,9 @@ def search_symbols(search_text, exchange=None):
     target_exchange = exchange or config.exchange
     
     try:
-        # Perform the search
-        search_resp = smart_api.searchScrip(exchange=target_exchange, searchtext=search_text)
+        # Use 'searchscrip' instead of 'searchScrip'
+        # Use 'exchange' and 'symbol' as arguments, not 'searchtext'
+        search_resp = smart_api.searchscrip(exchange=target_exchange, symbol=search_text)
         
         if isinstance(search_resp, dict) and search_resp.get("status"):
             # Extract matching symbols
@@ -5498,7 +5645,6 @@ def search_symbols(search_text, exchange=None):
     # If all attempts failed
     logger.warning(f"All search attempts failed for '{search_text}'")
     return []
-
 # Function to fetch data in bulk (up to 50 symbols at once)
 def fetch_bulk_stock_data(symbols):
     """
@@ -5779,10 +5925,7 @@ def fetch_data_periodically():
     for stock in DEFAULT_STOCKS:
         add_stock(stock["symbol"], stock["token"], stock["exchange"], stock["type"])
         
-        # For NIFTY and BANKNIFTY, load historical data from CSV files
-        if stock["symbol"] in ["NIFTY", "BANKNIFTY"]:
-            load_historical_data(stock["symbol"])
-    
+        
     # Mark dashboard as initialized
     dashboard_initialized = True
     
