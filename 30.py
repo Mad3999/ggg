@@ -4670,127 +4670,53 @@ def update_dynamic_stop_loss(option_key):
     # Calculate current profit percentage
     if option_type == "CE":
         current_profit_pct = (current_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
-        
-        if ENHANCED_TRAILING_SL:
-            # Enhanced trailing stop loss with multiple thresholds
-            with trading_state_lock:
-                trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
-                
-                if not trailing_sl_activated and current_profit_pct >= MIN_PROFIT_FOR_TRAILING:
-                    # Activate trailing stop loss
-                    trading_state.trailing_sl_activated[option_key] = True
-                    
-                    # Set initial trailing stop loss based on strategy
-                    if strategy_type == "SCALP":
-                        # Tighter stop for scalping
-                        new_stop_loss = entry_price + (current_price - entry_price) * 0.3
-                    elif strategy_type == "MOMENTUM":
-                        # Moderate stop for momentum
-                        new_stop_loss = entry_price + (current_price - entry_price) * 0.2
-                    elif strategy_type == "NEWS":
-                        # Moderate-tight stop for news
-                        new_stop_loss = entry_price + (current_price - entry_price) * 0.25
-                    else:  # SWING
-                        # Wider stop for swing
-                        new_stop_loss = entry_price
-                    
-                    trading_state.stop_loss[option_key] = new_stop_loss
-                    logger.info(f"{option_key} enhanced trailing stop loss activated at {current_profit_pct:.2f}%, SL={new_stop_loss:.2f}")
-            
-            elif trailing_sl_activated:
-                # Progressive trailing stop loss tightens as profit increases
-                for i, threshold in enumerate(TRAILING_STEP_INCREMENTS):
-                    if current_profit_pct >= threshold:
-                        # Calculate new stop loss based on threshold level
-                        sl_percentage = TRAILING_SL_PERCENTAGES[i]
-                        potential_sl = current_price * (1 - sl_percentage / 100)
-                        
-                        # Only move stop loss up
-                        with trading_state_lock:
-                            if potential_sl > current_stop_loss:
-                                trading_state.stop_loss[option_key] = potential_sl
-                                logger.info(f"{option_key} trailing SL updated to {potential_sl:.2f} at {threshold}% profit level")
-                                break
-        else:
-            # Original trailing stop loss logic
-            with trading_state_lock:
-                trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
-                
-                if current_profit_pct > 2.0 and not trailing_sl_activated:
-                    # Activate trailing stop loss at 2% profit
-                    trading_state.trailing_sl_activated[option_key] = True
-                    new_stop_loss = entry_price  # Move stop loss to breakeven
-                    trading_state.stop_loss[option_key] = new_stop_loss
-                    logger.info(f"{option_key} trailing stop loss activated, moved to breakeven")
-                    
-                elif trailing_sl_activated:
-                    # Continue trailing - only move stop loss up
-                    trail_price = current_price * 0.99  # 1% below current price
-                    if trail_price > current_stop_loss:
-                        trading_state.stop_loss[option_key] = trail_price
-                        logger.info(f"{option_key} trailing stop loss updated to {trail_price}")
-    
     else:  # PE
         current_profit_pct = (entry_price - current_price) / entry_price * 100 if entry_price > 0 else 0
-        
-        if ENHANCED_TRAILING_SL:
-            # Enhanced trailing stop loss with multiple thresholds
-            with trading_state_lock:
-                trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
+
+    if ENHANCED_TRAILING_SL:
+        with trading_state_lock:
+            trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
+
+            if not trailing_sl_activated and current_profit_pct >= MIN_PROFIT_FOR_TRAILING:
+                trading_state.trailing_sl_activated[option_key] = True
                 
-                if not trailing_sl_activated and current_profit_pct >= MIN_PROFIT_FOR_TRAILING:
-                    # Activate trailing stop loss
-                    trading_state.trailing_sl_activated[option_key] = True
-                    
-                    # Set initial trailing stop loss based on strategy
-                    if strategy_type == "SCALP":
-                        # Tighter stop for scalping
-                        new_stop_loss = entry_price - (entry_price - current_price) * 0.3
-                    elif strategy_type == "MOMENTUM":
-                        # Moderate stop for momentum
-                        new_stop_loss = entry_price - (entry_price - current_price) * 0.2
-                    elif strategy_type == "NEWS":
-                        # Moderate-tight stop for news
-                        new_stop_loss = entry_price - (entry_price - current_price) * 0.25
-                    else:  # SWING
-                        # Wider stop for swing
-                        new_stop_loss = entry_price
-                    
-                    trading_state.stop_loss[option_key] = new_stop_loss
-                    logger.info(f"{option_key} enhanced trailing stop loss activated at {current_profit_pct:.2f}%, SL={new_stop_loss:.2f}")
-            
+                if strategy_type == "SCALP":
+                    new_stop_loss = entry_price + (current_price - entry_price) * 0.3 if option_type == "CE" else entry_price - (entry_price - current_price) * 0.3
+                elif strategy_type == "MOMENTUM":
+                    new_stop_loss = entry_price + (current_price - entry_price) * 0.2 if option_type == "CE" else entry_price - (entry_price - current_price) * 0.2
+                elif strategy_type == "NEWS":
+                    new_stop_loss = entry_price + (current_price - entry_price) * 0.25 if option_type == "CE" else entry_price - (entry_price - current_price) * 0.25
+                else:  # SWING
+                    new_stop_loss = entry_price
+                
+                trading_state.stop_loss[option_key] = new_stop_loss
+                logger.info(f"{option_key} enhanced trailing stop loss activated at {current_profit_pct:.2f}%, SL={new_stop_loss:.2f}")
+
             elif trailing_sl_activated:
-                # Progressive trailing stop loss tightens as profit increases
                 for i, threshold in enumerate(TRAILING_STEP_INCREMENTS):
                     if current_profit_pct >= threshold:
-                        # Calculate new stop loss based on threshold level
                         sl_percentage = TRAILING_SL_PERCENTAGES[i]
-                        potential_sl = current_price * (1 + sl_percentage / 100)
+                        potential_sl = current_price * (1 - sl_percentage / 100) if option_type == "CE" else current_price * (1 + sl_percentage / 100)
                         
-                        # Only move stop loss down
-                        with trading_state_lock:
-                            if potential_sl < current_stop_loss:
-                                trading_state.stop_loss[option_key] = potential_sl
-                                logger.info(f"{option_key} trailing SL updated to {potential_sl:.2f} at {threshold}% profit level")
-                                break
-        else:
-            # Original trailing stop loss logic
-            with trading_state_lock:
-                trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
+                        if (option_type == "CE" and potential_sl > current_stop_loss) or (option_type == "PE" and potential_sl < current_stop_loss):
+                            trading_state.stop_loss[option_key] = potential_sl
+                            logger.info(f"{option_key} trailing SL updated to {potential_sl:.2f} at {threshold}% profit level")
+                            break
+    else:
+        with trading_state_lock:
+            trailing_sl_activated = trading_state.trailing_sl_activated[option_key]
+            
+            if current_profit_pct > 2.0 and not trailing_sl_activated:
+                trading_state.trailing_sl_activated[option_key] = True
+                trading_state.stop_loss[option_key] = entry_price
+                logger.info(f"{option_key} trailing stop loss activated, moved to breakeven")
+            
+            elif trailing_sl_activated:
+                trail_price = current_price * 0.99 if option_type == "CE" else current_price * 1.01
                 
-                if current_profit_pct > 2.0 and not trailing_sl_activated:
-                    # Activate trailing stop loss at 2% profit
-                    trading_state.trailing_sl_activated[option_key] = True
-                    new_stop_loss = entry_price  # Move stop loss to breakeven
-                    trading_state.stop_loss[option_key] = new_stop_loss
-                    logger.info(f"{option_key} trailing stop loss activated, moved to breakeven")
-                    
-                elif trailing_sl_activated:
-                    # Continue trailing - only move stop loss down
-                    trail_price = current_price * 1.01  # 1% above current price
-                    if trail_price < current_stop_loss:
-                        trading_state.stop_loss[option_key] = trail_price
-                        logger.info(f"{option_key} trailing stop loss updated to {trail_price}")
+                if (option_type == "CE" and trail_price > current_stop_loss) or (option_type == "PE" and trail_price < current_stop_loss):
+                    trading_state.stop_loss[option_key] = trail_price
+                    logger.info(f"{option_key} trailing stop loss updated to {trail_price}")
 
 def update_dynamic_target(option_key):
     """
