@@ -82,7 +82,7 @@ class RateLimitHandler:
                 oldest_timestamp = min(self.request_timestamps[endpoint_key])
                 wait_time = self.time_window - (current_time - oldest_timestamp)
                 if wait_time > 0:
-                    jitter = random.uniform(0.1, 0.2)  # Reduced jitter for more predictable timing
+                    jitter = random.uniform(0.01, 0.02)  # Reduced jitter for more predictable timing
                     logger.debug(f"Rate limiting {endpoint_key}: waiting {wait_time:.2f}s")
                     time.sleep(wait_time + jitter)
             
@@ -2161,69 +2161,6 @@ def fetch_option_data(option_key):
         return False
 
 
-def update_all_options():
-    """
-    Update all options with a more efficient prioritized approach using caching
-    """
-    global options_data, broker_connected, smart_api, ui_data_store
-    
-    # Skip if not connected to broker
-    if not broker_connected:
-        logger.warning("Broker not connected. Skipping options update.")
-        return
-    
-    # Prioritize options to update
-    priority_options = []
-    regular_options = []
-    last_updated_times = {}
-    
-    for option_key, option_info in options_data.items():
-        parent_symbol = option_info.get("parent_symbol")
-        option_type = option_info.get("option_type", "").lower()
-        last_updated = option_info.get("last_updated")
-        last_updated_times[option_key] = last_updated
-        
-        # Check if this is a primary option for any stock
-        is_primary = False
-        if parent_symbol in stocks_data:
-            primary_key = stocks_data[parent_symbol].get(f"primary_{option_type}")
-            if primary_key == option_key:
-                is_primary = True
-        
-        # Check if this option is in an active trade
-        is_active_trade = trading_state.active_trades.get(option_key, False)
-        
-        # Determine update priority
-        if is_primary or is_active_trade:
-            priority_options.append(option_key)
-        else:
-            regular_options.append(option_key)
-    
-    # Update priority options first
-    logger.info(f"Updating {len(priority_options)} priority options")
-    for option_key in priority_options:
-        fetch_option_data(option_key)
-        # Small delay between requests
-        time.sleep(0.001)
-    
-    # Sort regular options by last update time, oldest first
-    sorted_regular_options = sorted(
-        regular_options,
-        key=lambda k: last_updated_times.get(k, datetime.min)
-    )
-    
-    # Update a limited number of regular options each cycle
-    max_regular_updates = min(len(sorted_regular_options), 10)  # Limit to 10 options per cycle
-    if max_regular_updates > 0:
-        options_to_update = sorted_regular_options[:max_regular_updates]
-        logger.info(f"Updating {len(options_to_update)} of {len(sorted_regular_options)} regular options")
-        for option_key in options_to_update:
-            fetch_option_data(option_key)
-            # Small delay between requests
-            time.sleep(0.001)
-    
-    # Log overall update status
-    logger.info(f"Options update completed. {len(priority_options)} priority options updated, {max_regular_updates} regular options updated.")
 
 
 # Global variables for script master data
@@ -5967,104 +5904,6 @@ def fetch_bulk_stock_data(symbols):
     
     return results
 
-def update_all_stocks():
-    """Update all stocks using bulk API where possible."""
-    global stocks_data
-    
-    # Skip if not connected to broker
-    if not broker_connected:
-        return
-    
-    # Get all symbols to update
-    symbols_to_update = list(stocks_data.keys())
-    
-    # Process in batches of BULK_FETCH_SIZE to respect API limits
-    for i in range(0, len(symbols_to_update), BULK_FETCH_SIZE):
-        batch = symbols_to_update[i:i+BULK_FETCH_SIZE]
-        
-        # Fetch data for this batch
-        bulk_results = fetch_bulk_stock_data(batch)
-        
-        # Update each stock with the fetched data
-        for symbol, data in bulk_results.items():
-            if symbol in stocks_data and data:
-                stock_info = stocks_data[symbol]
-                
-                # Update with fetched data
-                previous_ltp = stock_info["ltp"]
-                stock_info["ltp"] = data.get("ltp")
-                stock_info["open"] = data.get("open")
-                stock_info["high"] = data.get("high")
-                stock_info["low"] = data.get("low")
-                stock_info["previous"] = data.get("previous")
-                
-                # Calculate movement percentage
-                if previous_ltp is not None and previous_ltp > 0:
-                    stock_info["movement_pct"] = ((data.get("ltp", 0) - previous_ltp) / previous_ltp) * 100
-                
-                # Calculate change percentage
-                if stock_info["open"] and stock_info["open"] > 0:
-                    stock_info["change_percent"] = ((data.get("ltp", 0) - stock_info["open"]) / stock_info["open"]) * 100
-                
-                # Add to price history
-                timestamp = pd.Timestamp.now()
-                
-                new_data = {
-                    'timestamp': timestamp,
-                    'price': data.get("ltp", 0),
-                    'volume': data.get("volume", 0),
-                    'open': stock_info.get("open", data.get("ltp", 0)),
-                    'high': stock_info.get("high", data.get("ltp", 0)),
-                    'low': stock_info.get("low", data.get("ltp", 0))
-                }
-                
-                # Append to price history DataFrame with proper index handling
-                with price_history_lock:
-                    stock_info["price_history"] = pd.concat([
-                        stock_info["price_history"], 
-                        pd.DataFrame([new_data])
-                    ], ignore_index=True)
-                    
-                    # Limit price history size
-                    if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
-                        stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
-                
-                # Update volatility
-                if previous_ltp is not None and previous_ltp > 0:
-                    pct_change = (data.get("ltp", 0) - previous_ltp) / previous_ltp * 100
-                    update_volatility(symbol, pct_change)
-                
-                # Update support/resistance levels periodically to save processing
-                if stock_info.get("last_sr_update") is None or \
-                   (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
-                    calculate_support_resistance(symbol)
-                    stock_info["last_sr_update"] = datetime.now()
-                
-                # Predict best strategy for this stock periodically
-                if stock_info.get("last_strategy_update") is None or \
-                   (datetime.now() - stock_info.get("last_strategy_update")).total_seconds() > 300:  # Every 5 minutes
-                    predict_strategy_for_stock(symbol)
-                    stock_info["last_strategy_update"] = datetime.now()
-                
-                # Update last update time
-                stock_info["last_updated"] = datetime.now()
-                last_data_update["stocks"][symbol] = datetime.now()
-                
-                # Update UI data store
-                ui_data_store['stocks'][symbol] = {
-                    'price': data.get("ltp"),
-                    'change': stock_info["change_percent"],
-                    'ohlc': {
-                        'open': stock_info["open"],
-                        'high': stock_info["high"],
-                        'low': stock_info["low"],
-                        'previous': stock_info["previous"]
-                    },
-                    'last_updated': stock_info["last_updated"].strftime('%H:%M:%S')
-                }
-        
-        # Short delay between batch requests to avoid overwhelming the API
-        time.sleep(0.002)
 
 def cleanup_old_data():
     """Clean up old data to prevent memory bloat."""
@@ -6147,9 +5986,549 @@ def cleanup_inactive_stocks():
         if should_remove_stock(symbol):
             remove_stock(symbol)
 
+
+# ============ Optimized Batch Data Fetching ============
+def fetch_bulk_instruments(instruments):
+    """
+    Fetch data for multiple instruments in a single batch with optimized API usage
+    
+    Args:
+        instruments (list): List of instrument dictionaries with token, exchange, etc.
+    
+    Returns:
+        dict: Dictionary of fetched data by symbol or key
+    """
+    global smart_api, broker_connected
+    
+    if not broker_connected or not smart_api:
+        return {}
+    
+    results = {}
+    
+    try:
+        # Group by exchange for more efficient fetching
+        exchange_groups = {}
+        for instr in instruments:
+            exchange = instr.get("exchange")
+            if exchange not in exchange_groups:
+                exchange_groups[exchange] = []
+            exchange_groups[exchange].append(instr)
+        
+        # Fetch each exchange group
+        for exchange, group in exchange_groups.items():
+            # Prepare batch request parameters
+            exchange_code = exchange
+            
+            # Fix: Convert all tokens to strings before joining
+            # This resolves "sequence item 0: expected str instance, int found" error
+            for instr in group:
+                # Make sure we use a string token for the API calls
+                token = instr.get("token")
+                symbol = instr.get("symbol") or instr.get("key")
+                
+                if token is None:
+                    logger.warning(f"Missing token for {symbol}, skipping")
+                    continue
+                
+                # Ensure token is a string
+                token_str = str(token)
+                
+                # Rate limit handling is done inside the rate_limited decorator
+                try:
+                    ltp_resp = smart_api.ltpData(exchange, symbol, token_str)
+                    
+                    # Process response
+                    if isinstance(ltp_resp, dict) and ltp_resp.get("status"):
+                        data = ltp_resp.get("data", {})
+                        
+                        # Ensure we have valid data
+                        ltp = 0
+                        try:
+                            ltp = float(data.get("ltp", 0) or 0)
+                        except (ValueError, TypeError):
+                            ltp = 0
+                            
+                        # Use safe defaults for other fields
+                        open_price = 0
+                        try:
+                            open_price = float(data.get("open", ltp) or ltp)
+                        except (ValueError, TypeError):
+                            open_price = ltp
+                            
+                        high_price = 0
+                        try:
+                            high_price = float(data.get("high", ltp) or ltp)
+                        except (ValueError, TypeError):
+                            high_price = ltp
+                            
+                        low_price = 0
+                        try:
+                            low_price = float(data.get("low", ltp) or ltp)
+                        except (ValueError, TypeError):
+                            low_price = ltp
+                            
+                        previous_price = 0
+                        try:
+                            previous_price = float(data.get("previous", ltp) or ltp)
+                        except (ValueError, TypeError):
+                            previous_price = ltp
+                        
+                        # Ensure non-zero values
+                        ltp = max(ltp, 0.01)
+                        open_price = max(open_price, 0.01)
+                        high_price = max(high_price, 0.01)
+                        low_price = max(low_price, 0.01)
+                        previous_price = max(previous_price, 0.01)
+                        
+                        results[symbol] = {
+                            "ltp": ltp,
+                            "open": open_price,
+                            "high": high_price,
+                            "low": low_price,
+                            "previous": previous_price,
+                            "volume": data.get("tradingSymbol", 0)
+                        }
+                        
+                except Exception as e:
+                    logger.warning(f"Error fetching data for {symbol}: {e}")
+                
+                # Add a tiny delay to prevent hitting rate limits
+                time.sleep(0.05)  # 50ms delay between requests
+    
+    except Exception as e:
+        logger.error(f"Error in fetch_bulk_instruments: {e}")
+    
+    return results
+
+def fetch_all_data_efficiently():
+    """
+    Efficiently fetch all required data in a single coordinated batch
+    to avoid rate limiting while maintaining 1-second update frequency
+    """
+    global stocks_data, options_data, last_data_update, broker_connected
+    
+    if not broker_connected:
+        return
+    
+    try:
+        # Refresh session if needed
+        refresh_session_if_needed()
+        
+        # 1. PREPARE DATA BATCHES
+        # Group all instruments by types to fetch them efficiently
+        stock_symbols = list(stocks_data.keys())
+        all_option_keys = list(options_data.keys())
+        
+        # Prioritize active trades and primary options
+        priority_options = []
+        regular_options = []
+        
+        for option_key in all_option_keys:
+            option_info = options_data[option_key]
+            parent_symbol = option_info.get("parent_symbol")
+            option_type = option_info.get("option_type", "").lower()
+            
+            # Check if this is a primary option or in active trade
+            is_primary = (parent_symbol in stocks_data and 
+                        stocks_data[parent_symbol].get(f"primary_{option_type}") == option_key)
+            is_active_trade = trading_state.active_trades.get(option_key, False)
+            
+            if is_primary or is_active_trade:
+                priority_options.append(option_key)
+            else:
+                regular_options.append(option_key)
+        
+        # 2. CREATE TOKEN LISTS FOR BULK FETCHING
+        # Create a mapping of exchange+token for all instruments
+        stock_tokens = []
+        for symbol in stock_symbols:
+            stock_info = stocks_data[symbol]
+            token = stock_info.get("token")
+            exchange = stock_info.get("exchange")
+            if token and exchange:
+                stock_tokens.append({
+                    "symbol": symbol, 
+                    "token": token, 
+                    "exchange": exchange
+                })
+        
+        option_tokens = []
+        for option_key in priority_options:
+            option_info = options_data[option_key]
+            token = option_info.get("token")
+            exchange = option_info.get("exchange", "NFO")
+            if token:
+                option_tokens.append({
+                    "key": option_key, 
+                    "symbol": option_key,  # Fix: Use option_key as symbol for lookup
+                    "token": token, 
+                    "exchange": exchange
+                })
+        
+        # 3. PROCESS INSTRUMENT BATCHES SEQUENTIALLY
+        # Process stock data first
+        if stock_tokens:
+            logger.info(f"Fetching data for {len(stock_tokens)} stocks")
+            # Process in smaller batches to avoid overwhelming the API
+            for i in range(0, len(stock_tokens), BULK_FETCH_SIZE):
+                batch = stock_tokens[i:i+BULK_FETCH_SIZE]
+                try:
+                    stock_results = fetch_bulk_instruments(batch)
+                    # Update stocks with the results
+                    for symbol, data in stock_results.items():
+                        if symbol in stocks_data:
+                            update_stock_with_data(symbol, data)
+                except Exception as e:
+                    logger.warning(f"Error processing stock batch: {e}")
+        
+        # Process priority options next
+        if option_tokens:
+            logger.info(f"Fetching data for {len(option_tokens)} priority options")
+            # Process in smaller batches
+            for i in range(0, len(option_tokens), BULK_FETCH_SIZE):
+                batch = option_tokens[i:i+BULK_FETCH_SIZE]
+                try:
+                    option_results = fetch_bulk_instruments(batch)
+                    # Update options with the results
+                    for symbol, data in option_results.items():
+                        # Find the option_key from the symbol
+                        matching_keys = [item["key"] for item in batch if item["symbol"] == symbol]
+                        if matching_keys:
+                            option_key = matching_keys[0]
+                            if option_key in options_data:
+                                update_option_with_data(option_key, data)
+                except Exception as e:
+                    logger.warning(f"Error processing option batch: {e}")
+        
+        # 4. PROCESS SELECTED REGULAR OPTIONS
+        # Process a few regular options each cycle
+        if regular_options:
+            # Sort by last update time (oldest first)
+            regular_options.sort(key=lambda k: 
+                                last_data_update.get("options", {}).get(k, datetime.min))
+            
+            # Take the first 5-10 options that need updates
+            options_to_update = regular_options[:5]  # Reduced number for faster cycle
+            update_selected_options(options_to_update)
+        
+        # 5. UPDATE PCR DATA PERIODICALLY
+        current_time = datetime.now()
+        if (current_time - last_pcr_update).total_seconds() >= PCR_UPDATE_INTERVAL:
+            update_all_pcr_data()
+        
+        # 6. UPDATE NEWS DATA PERIODICALLY
+        if strategy_settings["NEWS_ENABLED"]:
+            if (current_time - last_news_update).total_seconds() >= NEWS_CHECK_INTERVAL:
+                update_news_data()
+        
+        # 7. APPLY TRADING STRATEGY
+        apply_trading_strategy()
+        
+        # 8. UPDATE UI DATA STORE
+        update_ui_data_store_efficiently()
+        
+    except Exception as e:
+        logger.error(f"Error in fetch_all_data_efficiently: {e}", exc_info=True)
+
+def update_stock_with_data(symbol, data):
+    """
+    Update stock data with fetched information
+    
+    Args:
+        symbol (str): Stock symbol
+        data (dict): Fetched data
+    """
+    global stocks_data
+    
+    if symbol not in stocks_data:
+        return
+    
+    try:
+        stock_info = stocks_data[symbol]
+        
+        # Update with fetched data
+        previous_ltp = stock_info.get("ltp")
+        stock_info["ltp"] = data.get("ltp", previous_ltp)
+        stock_info["open"] = data.get("open", stock_info.get("open"))
+        stock_info["high"] = data.get("high", stock_info.get("high"))
+        stock_info["low"] = data.get("low", stock_info.get("low"))
+        stock_info["previous"] = data.get("previous", stock_info.get("previous"))
+        
+        # Calculate movement percentage
+        if previous_ltp is not None and previous_ltp > 0 and stock_info["ltp"] is not None:
+            stock_info["movement_pct"] = ((stock_info["ltp"] - previous_ltp) / previous_ltp) * 100
+        
+        # Calculate change percentage
+        if stock_info["open"] and stock_info["open"] > 0 and stock_info["ltp"] is not None:
+            stock_info["change_percent"] = ((stock_info["ltp"] - stock_info["open"]) / stock_info["open"]) * 100
+        
+        # Add to price history with proper locking
+        timestamp = pd.Timestamp.now()
+        new_data = {
+            'timestamp': timestamp,
+            'price': stock_info["ltp"] if stock_info["ltp"] is not None else previous_ltp,
+            'volume': data.get("volume", 0),
+            'open': stock_info.get("open"),
+            'high': stock_info.get("high"),
+            'low': stock_info.get("low")
+        }
+        
+        # Thread-safe history update
+        with price_history_lock:
+            stock_info["price_history"] = pd.concat([
+                stock_info["price_history"], 
+                pd.DataFrame([new_data])
+            ], ignore_index=True)
+            
+            # Limit history size
+            if len(stock_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                stock_info["price_history"] = stock_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+        
+        # Update volatility
+        if previous_ltp is not None and previous_ltp > 0 and stock_info["ltp"] is not None:
+            pct_change = (stock_info["ltp"] - previous_ltp) / previous_ltp * 100
+            update_volatility(symbol, pct_change)
+        
+        # Update support/resistance levels periodically
+        if stock_info.get("last_sr_update") is None or \
+           (datetime.now() - stock_info.get("last_sr_update")).total_seconds() > 300:  # Every 5 minutes
+            calculate_support_resistance(symbol)
+            stock_info["last_sr_update"] = datetime.now()
+        
+        # Update strategy prediction periodically
+        if stock_info.get("last_strategy_update") is None or \
+           (datetime.now() - stock_info.get("last_strategy_update")).total_seconds() > 300:  # Every 5 minutes
+            predict_strategy_for_stock(symbol)
+            stock_info["last_strategy_update"] = datetime.now()
+        
+        # Update last update time
+        stock_info["last_updated"] = datetime.now()
+        last_data_update["stocks"][symbol] = datetime.now()
+        
+    except Exception as e:
+        logger.error(f"Error updating stock {symbol}: {e}")
+
+def update_option_with_data(option_key, data):
+    """
+    Update option data with fetched information
+    
+    Args:
+        option_key (str): Option key
+        data (dict): Fetched data
+    """
+    global options_data
+    
+    if option_key not in options_data:
+        return
+    
+    try:
+        option_info = options_data[option_key]
+        
+        # Update with fetched data
+        previous_ltp = option_info.get("ltp")
+        ltp = data.get("ltp")
+        
+        if ltp is not None and ltp > 0:
+            # Update option info
+            option_info["ltp"] = ltp
+            option_info["previous"] = previous_ltp
+            option_info["open"] = data.get("open", option_info.get("open"))
+            option_info["high"] = data.get("high", option_info.get("high", ltp))
+            option_info["low"] = data.get("low", option_info.get("low", ltp))
+            
+            # Calculate change percentage
+            if previous_ltp is not None and previous_ltp > 0:
+                option_info["change_percent"] = ((ltp - previous_ltp) / previous_ltp) * 100
+            
+            # Add to price history with proper locking
+            timestamp = pd.Timestamp.now()
+            new_data = {
+                'timestamp': timestamp,
+                'price': ltp,
+                'volume': 0,
+                'open_interest': 0,
+                'change': option_info.get("change_percent", 0),
+                'open': option_info.get("open"),
+                'high': option_info.get("high"),
+                'low': option_info.get("low"),
+                'is_fallback': False
+            }
+            
+            # Thread-safe history update
+            with price_history_lock:
+                # Ensure all columns exist
+                for col in new_data.keys():
+                    if col not in option_info["price_history"].columns:
+                        option_info["price_history"][col] = np.nan
+                
+                option_info["price_history"] = pd.concat([
+                    option_info["price_history"], 
+                    pd.DataFrame([new_data])
+                ], ignore_index=True)
+                
+                # Limit history size
+                if len(option_info["price_history"]) > MAX_PRICE_HISTORY_POINTS:
+                    option_info["price_history"] = option_info["price_history"].tail(MAX_PRICE_HISTORY_POINTS)
+            
+            # Generate signals
+            try:
+                generate_option_signals(option_key)
+            except Exception as signal_err:
+                logger.warning(f"Signal generation failed for {option_key}: {signal_err}")
+            
+            # Update last data update timestamp
+            option_info["last_updated"] = datetime.now()
+            last_data_update["options"][option_key] = datetime.now()
+            
+        elif previous_ltp is not None:
+            # If we got a zero or None price, keep the previous price
+            option_info["last_updated"] = datetime.now()
+            last_data_update["options"][option_key] = datetime.now()
+    
+    except Exception as e:
+        logger.error(f"Error updating option {option_key}: {e}")
+
+def update_selected_options(option_keys):
+    """
+    Update a selected subset of regular (non-priority) options
+    
+    Args:
+        option_keys (list): List of option keys to update
+    """
+    if not option_keys:
+        return
+    
+    # Create token list
+    option_tokens = []
+    for option_key in option_keys:
+        if option_key in options_data:
+            option_info = options_data[option_key]
+            token = option_info.get("token")
+            exchange = option_info.get("exchange", "NFO")
+            if token:
+                option_tokens.append({
+                    "key": option_key,
+                    "symbol": option_key,  # Use option_key as symbol for lookup
+                    "token": token, 
+                    "exchange": exchange
+                })
+    
+    # Fetch data
+    if option_tokens:
+        results = fetch_bulk_instruments(option_tokens)
+        
+        # Update options with fetched data
+        for symbol, data in results.items():
+            # Find the option_key from the symbol
+            matching_keys = [item["key"] for item in option_tokens if item["symbol"] == symbol]
+            if matching_keys:
+                option_key = matching_keys[0]
+                if option_key in options_data:
+                    update_option_with_data(option_key, data)
+
+def update_ui_data_store_efficiently():
+    """Update UI data store with minimal processing for faster updates"""
+    global ui_data_store
+    
+    # Create a centralized data store for UI updates in a format optimized for the Dash callbacks
+    ui_data_store = {
+        'connection': {
+            'status': 'connected' if broker_connected else 'disconnected',
+            'message': broker_error_message or '',
+            'last_connection': last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never'
+        },
+        'stocks': {},
+        'options': {},
+        'pcr': {},
+        'sentiment': market_sentiment.copy(),
+        'predicted_strategies': {},
+        'news': ui_data_store.get('news', {}),
+        'trading': {
+            'active_trades': sum(1 for v in trading_state.active_trades.values() if v),
+            'total_pnl': trading_state.total_pnl,
+            'daily_pnl': trading_state.daily_pnl,
+            'trades_today': trading_state.trades_today,
+            'wins': trading_state.wins,
+            'losses': trading_state.losses
+        },
+        'strategies': strategy_settings.copy()
+    }
+    
+    # Efficiently update stocks data
+    for symbol, stock_info in stocks_data.items():
+        ltp = stock_info.get("ltp")
+        last_updated = stock_info.get("last_updated")
+        last_updated_str = last_updated.strftime('%H:%M:%S') if last_updated else 'N/A'
+        
+        ui_data_store['stocks'][symbol] = {
+            'price': ltp,
+            'change': stock_info.get("change_percent", 0),
+            'ohlc': {
+                'open': stock_info.get("open"),
+                'high': stock_info.get("high"),
+                'low': stock_info.get("low"),
+                'previous': stock_info.get("previous")
+            },
+            'last_updated': last_updated_str,
+            'support_levels': stock_info.get("support_levels", []),
+            'resistance_levels': stock_info.get("resistance_levels", [])
+        }
+        
+        # Add predicted strategy
+        predicted_strategy = stock_info.get("predicted_strategy")
+        strategy_confidence = stock_info.get("strategy_confidence", 0)
+        
+        if predicted_strategy and strategy_confidence > 0:
+            ui_data_store['predicted_strategies'][symbol] = {
+                'strategy': predicted_strategy,
+                'confidence': strategy_confidence
+            }
+    
+    # Efficiently update options data
+    for symbol in stocks_data:
+        ui_data_store['options'][symbol] = {}
+        
+        # Process CE options
+        ce_key = stocks_data[symbol].get("primary_ce")
+        if ce_key and ce_key in options_data:
+            ce_option = options_data[ce_key]
+            
+            ui_data_store['options'][symbol]['ce'] = {
+                'strike': ce_option.get("strike", "N/A"),
+                'price': ce_option.get("ltp"),
+                'signal': ce_option.get("signal", 0),
+                'strength': ce_option.get("strength", 0),
+                'trend': ce_option.get("trend", "NEUTRAL"),
+                'using_fallback': ce_option.get("using_fallback", False)
+            }
+        
+        # Process PE options
+        pe_key = stocks_data[symbol].get("primary_pe")
+        if pe_key and pe_key in options_data:
+            pe_option = options_data[pe_key]
+            
+            ui_data_store['options'][symbol]['pe'] = {
+                'strike': pe_option.get("strike", "N/A"),
+                'price': pe_option.get("ltp"),
+                'signal': pe_option.get("signal", 0),
+                'strength': pe_option.get("strength", 0),
+                'trend': pe_option.get("trend", "NEUTRAL"),
+                'using_fallback': pe_option.get("using_fallback", False)
+            }
+    
+    # Efficiently update PCR data
+    for symbol, data in pcr_data.items():
+        if symbol in stocks_data:
+            ui_data_store['pcr'][symbol] = {
+                'current': data.get('current', 1.0),
+                'trend': data.get('trend', 'NEUTRAL'),
+                'strength': data.get('strength', 0)
+            }
+
+# ============ Modified Main Data Thread Function ============
 def fetch_data_periodically():
-    """Main function to fetch data periodically with smart retry logic."""
-    global dashboard_initialized, data_thread_started, broker_error_message
+    """Main function to fetch data periodically with optimized batch processing"""
+    global dashboard_initialized, data_thread_started, broker_error_message, broker_connection_retry_time
     
     # Mark that the data thread has started
     data_thread_started = True
@@ -6161,8 +6540,7 @@ def fetch_data_periodically():
     # Initialize with default stocks
     for stock in DEFAULT_STOCKS:
         add_stock(stock["symbol"], stock["token"], stock["exchange"], stock["type"])
-        
-        
+    
     # Mark dashboard as initialized
     dashboard_initialized = True
     
@@ -6194,31 +6572,10 @@ def fetch_data_periodically():
                     # Increase retry interval up to the maximum
                     connection_retry_interval = min(connection_retry_interval * 2, max_connection_retry_interval)
             
-            # Try to use broker data if connected
+            # Use the new optimized data fetching function if connected
             if broker_connected:
-               # Refresh session if needed
-                refresh_session_if_needed()
-                
-                # Update all stocks using bulk API
-                update_all_stocks()
-                
-                # Update option selection
-                update_option_selection()
-                
-                # Update all options using bulk API
-                update_all_options()
-                
-                # Update PCR data
-                update_all_pcr_data()
-                
-                # Update news data and check for news-based trading opportunities
-                if strategy_settings["NEWS_ENABLED"]:
-                    if (current_time - last_news_update).total_seconds() >= NEWS_CHECK_INTERVAL:
-                        update_news_data()
-                        logger.info("News data updated")
-                
-                # Apply trading strategy
-                apply_trading_strategy()
+                # This is the key function that efficiently fetches all data
+                fetch_all_data_efficiently()
             
             # Always do these maintenance tasks, even without broker connection
             # Cleanup check
@@ -6238,15 +6595,16 @@ def fetch_data_periodically():
                 'last_connection': last_connection_time.strftime('%H:%M:%S') if last_connection_time else 'Never'
             }
             
-            # Wait before next update (1 second for real-time updates)
-            time.sleep(API_UPDATE_INTERVAL)
+            # Wait before next update - exact 1 second cycle
+            cycle_end_time = datetime.now()
+            elapsed = (cycle_end_time - current_time).total_seconds()
+            if elapsed < 1.0:
+                time.sleep(1.0 - elapsed)  # Sleep to maintain exactly 1-second cycle
             
         except Exception as e:
             logger.error(f"Error in fetch_data_periodically: {e}", exc_info=True)
-            time.sleep(1)
-# ============ Dashboard UI ============
-# Define a modern color scheme for the dashboard
-# ============ Dashboard UI ============
+            time.sleep(1)  # Sleep before retry on error
+
 # Define a modern color scheme for the dashboard
 COLOR_SCHEME = {
     "bg_dark": "#121212",
@@ -6956,12 +7314,12 @@ def create_layout():
             # Refresh intervals - more efficient refresh rates
             dcc.Interval(
                 id='fast-interval',
-                interval=500,  # 1 second for time-sensitive data
+                interval=1000,  # 1 second for time-sensitive data
                 n_intervals=0
             ),
             dcc.Interval(
                 id='medium-interval',
-                interval=5000,  # 5 seconds for regular updates
+                interval=500,  # 5 seconds for regular updates
                 n_intervals=0
             ),
             dcc.Interval(
